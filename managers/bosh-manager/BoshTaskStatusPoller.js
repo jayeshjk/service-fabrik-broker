@@ -38,7 +38,7 @@ class BoshTaskStatusPoller extends BaseStatusPoller {
         .tap(lastOperationValue => logger.debug('last operation value is ', lastOperationValue))
         .tap(lastOperationValue => lastOperationOfInstance = lastOperationValue)
         .then(lastOperationValue => Promise.all([
-          this._updateLastOperationStateInResource(instanceId,lastOperationValue, directorService),
+          this._updateLastOperationStateInResource(instanceId, lastOperationValue, directorService),
           Promise.try(() => {
             if (_.includes([CONST.APISERVER.RESOURCE_STATE.SUCCEEDED, CONST.APISERVER.RESOURCE_STATE.FAILED], lastOperationValue.resourceState)) {
               // cancel the poller and clear the array
@@ -114,7 +114,7 @@ class BoshTaskStatusPoller extends BaseStatusPoller {
     }
   }
 
-  _updateLastOperationStateInResource(instanceId,lastOperationValue, directorService) {
+  _updateLastOperationStateInResource(instanceId, lastOperationValue, directorService) {
     return Promise.try(() => {
       if (lastOperationValue.resourceState === CONST.APISERVER.RESOURCE_STATE.SUCCEEDED &&
         (lastOperationValue.type === CONST.OPERATION_TYPE.CREATE || lastOperationValue.type === CONST.OPERATION_TYPE.UPDATE)) {
