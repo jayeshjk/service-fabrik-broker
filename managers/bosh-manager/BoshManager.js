@@ -52,6 +52,11 @@ class BoshManager extends BaseManager {
               description: CONST.SERVICE_BROKER_ERR_MSG
             },
             error: utils.buildErrorJson(err)
+          },
+          metadata: {
+            annotations: {
+              deploymentIps: '{}'
+            }
           }
         });
       });
@@ -72,6 +77,11 @@ class BoshManager extends BaseManager {
         status: {
           response: response,
           state: CONST.APISERVER.RESOURCE_STATE.IN_PROGRESS
+        },
+        metadata: {
+          annotations: {
+            deploymentIps: '{}'
+          }
         }
       }));
   }
@@ -91,6 +101,11 @@ class BoshManager extends BaseManager {
         status: {
           response: response,
           state: CONST.APISERVER.RESOURCE_STATE.IN_PROGRESS
+        },
+        metadata: {
+          annotations: {
+            deploymentIps: '{}'
+          }
         }
       }));
   }
@@ -110,6 +125,11 @@ class BoshManager extends BaseManager {
         status: {
           response: response,
           state: CONST.APISERVER.RESOURCE_STATE.IN_PROGRESS
+        },
+        metadata: {
+          annotations: {
+            deploymentIps: '{}'
+          }
         }
       }))
       .catch(ServiceInstanceNotFound, () => eventmesh.apiServerClient.deleteResource({

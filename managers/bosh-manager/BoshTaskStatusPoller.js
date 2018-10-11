@@ -68,6 +68,11 @@ class BoshTaskStatusPoller extends BaseStatusPoller {
                 lastOperation: lastOperationOfInstance,
                 state: CONST.APISERVER.RESOURCE_STATE.FAILED,
                 error: utils.buildErrorJson(err)
+              },
+              metadata: {
+                annotations: {
+                  deploymentIps: '{}'
+                }
               }
             });
           }
@@ -87,6 +92,11 @@ class BoshTaskStatusPoller extends BaseStatusPoller {
               lastOperation: lastOperationOfInstance,
               state: CONST.APISERVER.RESOURCE_STATE.FAILED,
               error: utils.buildErrorJson(err)
+            },
+            metadata: {
+              annotations: {
+                deploymentIps: '{}'
+              }
             }
           });
         })
