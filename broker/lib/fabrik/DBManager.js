@@ -13,6 +13,7 @@ const ServiceBindingNotFound = errors.ServiceBindingNotFound;
 const NotFound = errors.NotFound;
 const CONST = require('../../../common/constants');
 const dbConnectionManager = require('../../../data-access-layer/db/DbConnectionManager');
+const eventmesh = require('../../../data-access-layer/eventmesh');
 
 /**
  * DB can be configured into ServiceFabrik by either providing the URL of already provisioned mongodb via 'config.mongodb.url'
@@ -99,14 +100,22 @@ class DBManager {
       if (this.bindInfo) {
         return this.bindInfo;
       }
-      return utils
-        .retry(() => this
-          .directorService
-          .getBindingProperty(config.mongodb.deployment_name, CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID), {
-            maxAttempts: 5,
-            minDelay: 5000,
-            predicate: (err) => !(err instanceof ServiceBindingNotFound)
-          });
+      return eventmesh.apiServerClient.getResource({
+        resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.BIND,
+        resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR_BIND,
+        resourceId: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID
+      })
+      .then(resource => _.get(resource, 'status.response'))
+      .catch(NotFound, () => {
+        return utils
+          .retry(() => this
+            .directorService
+            .getBindingProperty(config.mongodb.deployment_name, CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID), {
+              maxAttempts: 5,
+              minDelay: 5000,
+              predicate: (err) => !(err instanceof ServiceBindingNotFound)
+            });
+        });
     });
   }
 
@@ -238,8 +247,14 @@ class DBManager {
             this.bindInfo = {
               credentials: credentials
             };
-            this.initialize();
-          });
+            let bindProperty = {
+              id: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID,
+              parameters: config.mongodb.provision.bind_params || {},
+              credentials: credentials
+            }
+            return this.storeBindProperty(bindProperty)
+          })
+          .then(() => this.initialize());
       })
       .catch((err) => {
         this.dbState = CONST.DB.STATE.BIND_FAILED;
@@ -247,6 +262,18 @@ class DBManager {
         //This block of code could be reached due to Bosh being down (either while getting binding or creating binding). So retry this operation.
         setTimeout(() => this.dbCreateUpdateSucceeded(response, createIfNotPresent), config.mongodb.retry_connect.min_delay);
       });
+  }
+
+  storeBindProperty(bindProperty) {
+    return eventmesh.apiServerClient.createResource({
+      resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.BIND,
+      resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR_BIND,
+      resourceId: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID,
+      status: {
+        state: CONST.APISERVER.RESOURCE_STATE.DELETE,
+        response: bindProperty
+      }
+    });
   }
 
   dbCreateUpdateFailed(err, operation) {
