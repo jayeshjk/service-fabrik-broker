@@ -269,6 +269,9 @@ class DBManager {
       resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.BIND,
       resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR_BIND,
       resourceId: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID,
+      options: {
+        binding_id: bindProperty.id
+      },
       status: {
         state: CONST.APISERVER.RESOURCE_STATE.DELETE,
         response: bindProperty
