@@ -103,7 +103,7 @@ class DBManager {
       return eventmesh.apiServerClient.getResource({
         resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.BIND,
         resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR_BIND,
-        resourceId: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID
+        resourceId: _.toLower(CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID)
       })
       .then(resource => _.get(resource, 'status.response'))
       .catch(NotFound, () => {
@@ -268,7 +268,7 @@ class DBManager {
     return eventmesh.apiServerClient.createResource({
       resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.BIND,
       resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR_BIND,
-      resourceId: CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID,
+      resourceId: _.toLower(CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID),
       options: {
         binding_id: bindProperty.id
       },
