@@ -273,7 +273,7 @@ class DBManager {
         binding_id: bindProperty.id
       },
       status: {
-        state: CONST.APISERVER.RESOURCE_STATE.DELETE,
+        state: CONST.APISERVER.RESOURCE_STATE.SUCCEEDED,
         response: bindProperty
       }
     });
