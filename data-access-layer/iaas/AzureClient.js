@@ -5,6 +5,7 @@ const azureStorage = require('azure-storage');
 const logger = require('../../common/logger');
 const errors = require('../../common/errors');
 const utils = require('../../common/utils');
+const uuid = require('uuid');
 const ComputeClient = require('./ComputeClient');
 const BaseCloudClient = require('./BaseCloudClient');
 const NotFound = errors.NotFound;
@@ -27,6 +28,83 @@ class AzureClient extends BaseCloudClient {
       .value()
     );
     Promise.promisifyAll(this.computeClient.snapshots);
+    Promise.promisifyAll(this.computeClient.disks);
+  }
+
+  getSnapshot(snapshotId) {
+    return this.computeClient.snapshots.getAsync(this.settings.resource_group, snapshotId)
+      .then(snapshotResponse => _.pick(snapshotResponse, ['location', 'creationData', 'id']));
+  }
+
+  convertToBoshDiskFormat(diskName) {
+    const boshDiskSegments = ['caching:None', `disk_name:${diskName}`, `resource_group_name:${this.settings.resource_group}`];
+    const boshDiskName = _.join(boshDiskSegments, encodeURIComponent(';'));
+    return boshDiskName;
+  }
+
+  createDiskFromSnapshot(snapshotId, zones, opts = {}) {
+    const diskName = `bosh-disk-data-${uuid.v4()}`;
+    const boshDiskName = this.convertToBoshDiskFormat(diskName);
+    return Promise.try(() => this.getSnapshot(snapshotId))
+      .then(snapshotData => {
+        const options = {
+          zones: _.isArray(zones) ? zones : [zones],
+          location: snapshotData.location,
+          tags: _.assign({}, opts.tags || {}, {
+            createdBy: 'service-fabrik',
+            caching: 'None',
+            resource_group_name: this.settings.resource_group
+          }),
+          sku: _.assign({}, {
+            name: opts.type || 'Premium_LRS'
+          }),
+          creationData: {
+            createOption: 'Copy',
+            sourceUri: snapshotData.id
+          }
+        };
+        return this.computeClient.disks.createOrUpdateAsync(this.settings.resource_group, diskName, options);
+      })
+      .then(diskResponse => ({
+        volumeId: boshDiskName,
+        size: diskResponse.diskSizeGB,
+        zone: diskResponse.zones[0],
+        type: diskResponse.sku ? diskResponse.sku.name : '',
+        extra: {
+          type: diskResponse.sku,
+          sku: diskResponse.sku,
+          tags: diskResponse.tags
+        }
+      }));
+  }
+
+  getDiskMetadata(diskId) {
+    const decodedDiskId = decodeURIComponent(diskId);
+    const boshDiskSegments = _.split(decodedDiskId, ';');
+    let diskName;
+    if (boshDiskSegments.length > 1) {
+      diskName = _.chain(boshDiskSegments)
+        .filter(seg => _.startsWith(seg, 'disk_name:'))
+        .head()
+        .split(':')
+        .last()
+        .value();
+    } else {
+      diskName = decodedDiskId;
+    }
+    return this.computeClient.disks
+      .getAsync(this.settings.resource_group, diskName)
+      .then(diskResponse => ({
+        volumeId: this.convertToBoshDiskFormat(diskResponse.name),
+        size: diskResponse.diskSizeGB,
+        zone: diskResponse.zones[0],
+        type: diskResponse.sku ? diskResponse.sku.name : '',
+        extra: {
+          sku: diskResponse.sku,
+          type: diskResponse.sku,
+          tags: diskResponse.tags
+        }
+      }));
   }
 
   getContainer(container) {
@@ -44,11 +122,11 @@ class AzureClient extends BaseCloudClient {
       container = this.containerName;
     }
     const prefix = options ? options.prefix : null;
-    //TODO Need to update following line with value from 'options' e.g. options.marker
+    // TODO Need to update following line with value from 'options' e.g. options.marker
     let continuationToken = null;
-    //TODO : maxResult is 5000 
-    //https://azure.github.io/azure-storage-node/BlobService.html#listBlobsSegmentedWithPrefix__anchor
-    //If want to fetch more use 'continuationToken' returned in result
+    // TODO : maxResult is 5000 
+    // https://azure.github.io/azure-storage-node/BlobService.html#listBlobsSegmentedWithPrefix__anchor
+    // If want to fetch more use 'continuationToken' returned in result
     return this.storage
       .listBlobsSegmentedWithPrefixAsync(container, prefix, continuationToken)
       .then(result => {
@@ -89,7 +167,7 @@ class AzureClient extends BaseCloudClient {
 
   download(options) {
     return utils.streamToPromise(this.storage.createReadStream(
-        options.container, options.remote))
+      options.container, options.remote))
       .catchThrow(BaseCloudClient.providerErrorTypes.NotFound, new NotFound(`Object '${options.remote}' not found`));
   }
 
@@ -143,7 +221,7 @@ class AzureClient extends BaseCloudClient {
         container: container,
         remote: file
       })
-      .then((data) => JSON.parse(data))
+      .then(data => JSON.parse(data))
       .catchThrow(SyntaxError, new NotFound(`Object '${file}' not found`));
   }
 

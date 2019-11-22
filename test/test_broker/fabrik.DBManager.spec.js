@@ -9,42 +9,71 @@ const config = require('../../common/config');
 const utils = require('../../common/utils');
 const logger = require('../../common/logger');
 const CONST = require('../../common/constants');
-const DBManagerNoProxy = require('../../broker/lib/fabrik/DBManager');
+const DBManagerNoProxy = require('../../data-access-layer/db/DBManager/DBManager');
 
 let bindPropertyFound = 0;
+let bindPropertyFoundOnApiServer = false;
+let errorsWithApiServer = false;
 let failCreateUpdate = false;
 const mongoDBUrl = 'mongodb://username:password@10.11.0.2:27017,10.11.0.3:27017,10.11.0.4:27017/service-fabrik';
 let dbConnectionState = 1;
-const DirectorManagerStub = {
-  getBindingProperty: function () {
-    return Promise.try(() => {
-      if (bindPropertyFound === 0) {
-        return {
-          credentials: {
-            uri: mongoDBUrl
-          }
-        };
-      } else if (bindPropertyFound === 1) {
-        throw new errors.ServiceBindingNotFound('SF Mongodb binding not found...Expected error.');
-      } else {
-        throw new errors.ServiceUnavailable('BOSH is down... simulated failure. Expected error.!');
+class DirectorServiceStub {
+  createBinding() {
+    return Promise.resolve({
+      credentials: {
+        uri: mongoDBUrl
       }
     });
-  },
-  createBinding: () => Promise.resolve({
-    credentials: {
-      uri: mongoDBUrl
+  }
+  createOrUpdateDeployment() {
+    return Promise.try(() => {
+      if (!failCreateUpdate) {
+        return {
+          task_id: '1234'
+        };
+      }
+      throw new errors.ServiceUnavailable('Bosh is down... simulated failure. Expected error.!');
+    });
+  }
+}
+
+let eventMeshStub = {
+  apiServerClient: {
+    getResource: () => {
+      return Promise.try(() => {
+        if (errorsWithApiServer) {
+          throw new errors.ServiceUnavailable('could not connect to ApiServer');
+        }
+        if (bindPropertyFoundOnApiServer) {
+          return {
+            status: {
+              response: utils.encodeBase64({
+                credentials: {
+                  uri: mongoDBUrl
+                }
+              })
+            }
+          };
+        } else {
+          throw new errors.NotFound('resource not found on ApiServer');
+        }
+      });
+    },
+    deleteResource: () => {
+      if (bindPropertyFoundOnApiServer) {
+        return Promise.resolve();
+      } else {
+        return Promise.try(() => {
+          throw new errors.NotFound('resource not found on ApiServer');
+        });
+      }
+    },
+    createResource: () => {
+      return Promise.resolve();
     }
-  }),
-  createOrUpdateDeployment: () => Promise.try(() => {
-    if (!failCreateUpdate) {
-      return {
-        task_id: '1234'
-      };
-    }
-    throw new errors.ServiceUnavailable('Bosh is down... simulated failure. Expected error.!');
-  })
+  }
 };
+
 let errorOnDbStart = false;
 const proxyLibs = {
   '../../../common/config': {
@@ -72,36 +101,38 @@ const proxyLibs = {
     getConnectionStatus: () => dbConnectionState,
     shutDown: () => Promise.resolve({})
   },
-  './DirectorManager': {
-    load: () => Promise.resolve(DirectorManagerStub)
-  },
+  '../../../operators/bosh-operator/DirectorService': DirectorServiceStub,
   '../../../common/models/Catalog': {
     getPlan: () => {}
-  }
+  },
+  '../../../data-access-layer/eventmesh': eventMeshStub
 };
 
-const DBManager = proxyquire('../../broker/lib/fabrik/DBManager', proxyLibs);
+const DBManager = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLibs);
 const proxyLib0 = _.cloneDeep(proxyLibs);
 delete proxyLib0['../../../common/config'].mongodb.deployment_name;
-const DBManagerWithUndefinedDeploymentName = proxyquire('../../broker/lib/fabrik/DBManager', proxyLib0);
+const DBManagerWithUndefinedDeploymentName = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLib0);
 const proxyLib1 = _.cloneDeep(proxyLibs);
 delete proxyLib1['../../../common/config'].mongodb.provision.network_index;
-const DBManagerWithUndefinedNetworkSegmentIdx = proxyquire('../../broker/lib/fabrik/DBManager', proxyLib1);
+const DBManagerWithUndefinedNetworkSegmentIdx = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLib1);
 const proxyLib2 = _.cloneDeep(proxyLibs);
 proxyLib2['../../../common/config'].mongodb.deployment_name = 'service-fabrik-mongodb';
-const DBManagerForUpdate = proxyquire('../../broker/lib/fabrik/DBManager', proxyLib2);
+const DBManagerForUpdate = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLib2);
 const proxyLib3 = _.cloneDeep(proxyLibs);
 delete proxyLib3['../../../common/config'].mongodb.provision;
 delete proxyLib3['../../../common/config'].mongodb.deployment_name;
 proxyLib3['../../../common/config'].mongodb.url = 'mongodb://user:pass@localhost:27017/service-fabrik';
-const DBManagerByUrl = proxyquire('../../broker/lib/fabrik/DBManager', proxyLib3);
+const DBManagerByUrl = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLib3);
+const proxyLib4 = _.cloneDeep(proxyLibs);
+proxyLib4['../../../common/config'].mongodb.retry_connect.min_delay = 120000;
+const DBManagerCreateWithDelayedReconnectRetry = proxyquire('../../data-access-layer/db/DBManager/DBManager', proxyLib4);
 
 describe('fabrik', function () {
   /* jshint unused:false */
   /* jshint expr:true */
   describe('DBManager', function () {
     let sandbox, getDeploymentVMsStub, getDeploymentStub, pollTaskStatusTillCompleteStub,
-      loggerWarnSpy, dbInitializeSpy, dbInitializeByUrlSpy, dbCreateUpdateSucceededSpy, retryStub;
+      loggerWarnSpy, dbInitializeSpy, dbInitializeByUrlSpy, dbInitializeForCreateSpy, dbCreateUpdateSucceededSpy, retryStub;
     const db_backup_guid = '925eb8f4-1e14-42f6-b7cd-cdcf05205bb2';
     const dbIps = ['10.11.0.2', '10.11.0.3', '10.11.0.4'];
     const deploymentVms = [{
@@ -182,15 +213,16 @@ describe('fabrik', function () {
     const deferred = Promise.defer();
     let errorPollTask = false;
     before(function () {
-      sandbox = sinon.sandbox.create();
-      loggerWarnSpy = sandbox.spy(logger, 'warn');
-      retryStub = sandbox.stub(utils, 'retry', (callback, options) => callback());
+      sandbox = sinon.createSandbox();
+      loggerWarnSpy = sinon.spy(logger, 'warn');
+      retryStub = sandbox.stub(utils, 'retry').callsFake((callback, options) => callback());
       dbInitializeSpy = sinon.spy(DBManager.prototype, 'initialize');
+      dbInitializeForCreateSpy = sinon.spy(DBManagerCreateWithDelayedReconnectRetry.prototype, 'initialize');
       dbInitializeByUrlSpy = sinon.spy(DBManagerByUrl.prototype, 'initialize');
       dbCreateUpdateSucceededSpy = sandbox.spy(DBManagerForUpdate.prototype, 'dbCreateUpdateSucceeded');
       getDeploymentVMsStub = sandbox.stub(BoshDirectorClient.prototype, 'getDeploymentVms');
       getDeploymentStub = sandbox.stub(BoshDirectorClient.prototype, 'getDeployment');
-      pollTaskStatusTillCompleteStub = sandbox.stub(BoshDirectorClient.prototype, 'pollTaskStatusTillComplete',
+      pollTaskStatusTillCompleteStub = sandbox.stub(BoshDirectorClient.prototype, 'pollTaskStatusTillComplete').callsFake(
         () => Promise.try(() => {
           if (errorPollTask) {
             throw new errors.ServiceUnavailable('Bosh Down...');
@@ -203,14 +235,14 @@ describe('fabrik', function () {
     });
 
     afterEach(function () {
-      getDeploymentStub.reset();
-      getDeploymentVMsStub.reset();
-      pollTaskStatusTillCompleteStub.reset();
-      loggerWarnSpy.reset();
-      dbInitializeSpy.reset();
-      dbInitializeByUrlSpy.reset();
-      retryStub.reset();
-      dbCreateUpdateSucceededSpy.reset();
+      getDeploymentStub.resetHistory();
+      getDeploymentVMsStub.resetHistory();
+      pollTaskStatusTillCompleteStub.resetHistory();
+      loggerWarnSpy.resetHistory();
+      dbInitializeSpy.resetHistory();
+      dbInitializeByUrlSpy.resetHistory();
+      retryStub.resetHistory();
+      dbCreateUpdateSucceededSpy.resetHistory();
     });
     after(function () {
       sandbox.restore();
@@ -219,11 +251,12 @@ describe('fabrik', function () {
     describe('#Initialize', function () {
       let configStub, initSandbox, proxyDBUrl;
       before(function () {
-        initSandbox = sinon.sandbox.create();
+        initSandbox = sinon.createSandbox();
         configStub = sandbox.stub(config);
       });
       beforeEach(function () {
-        bindPropertyFound = 0;
+        bindPropertyFoundOnApiServer = true;
+        errorsWithApiServer = false;
       });
       afterEach(function () {
         errorOnDbStart = false;
@@ -256,13 +289,13 @@ describe('fabrik', function () {
         return validateConnected(dbManager, 1);
       });
       it('On start if binding property cannot be retrieved then keep trying till it succeeds', function () {
-        bindPropertyFound = 2;
+        errorsWithApiServer = true;
         const dbManager = new DBManager();
         return Promise.delay(10).then(() => {
           expect(dbManager.dbState).to.eql(CONST.DB.STATE.TB_INIT);
           expect(loggerWarnSpy).not.to.be.called;
           expect(dbManager.dbInitialized).to.eql(false);
-          bindPropertyFound = 0;
+          errorsWithApiServer = false;
           return validateConnected(dbManager);
         });
       });
@@ -289,7 +322,8 @@ describe('fabrik', function () {
 
     describe('#create', function () {
       beforeEach(function () {
-        bindPropertyFound = 1;
+        bindPropertyFoundOnApiServer = false;
+        errorsWithApiServer = false;
       });
       afterEach(function () {
         errorPollTask = false;
@@ -321,16 +355,17 @@ describe('fabrik', function () {
           return dbManager.createOrUpdateDbDeployment(true).catch(errors.BadRequest, error => {});
         });
       });
+
       it('should provision & connect to MongoDB Successfully', function () {
         const dbManager = new DBManager();
         deferred.reject(new errors.NotFound('Deployment not found'));
         return Promise.delay(2).then(() => {
           expect(dbManager.dbState).to.eql(CONST.DB.STATE.TB_INIT);
           expect(loggerWarnSpy).to.be.calledOnce;
-          expect(loggerWarnSpy.firstCall.args[1] instanceof errors.ServiceBindingNotFound).to.eql(true);
-          let taskId;
+          expect(loggerWarnSpy.firstCall.args[1] instanceof errors.NotFound).to.eql(true);          let taskId;
           return dbManager.createOrUpdateDbDeployment(true)
             .tap(out => taskId = out.task_id)
+            .tap(() => bindPropertyFoundOnApiServer = true)
             .then(() => Promise.delay(3))
             .then(() => {
               expect(getDeploymentStub).to.be.calledOnce;
@@ -342,6 +377,7 @@ describe('fabrik', function () {
             });
         });
       });
+      
       it('Should gracefully handle BOSH errors while creating deployment', function () {
         errorPollTask = true;
         const dbManager = new DBManager();
@@ -349,7 +385,7 @@ describe('fabrik', function () {
         return Promise.delay(2).then(() => {
           expect(dbManager.dbState).to.eql(CONST.DB.STATE.TB_INIT);
           expect(loggerWarnSpy).to.be.calledOnce;
-          expect(loggerWarnSpy.firstCall.args[1] instanceof errors.ServiceBindingNotFound).to.eql(true);
+          expect(loggerWarnSpy.firstCall.args[1] instanceof errors.NotFound).to.eql(true);
           let taskId;
           return dbManager.createOrUpdateDbDeployment(true)
             .tap(out => taskId = out.task_id)
@@ -367,21 +403,22 @@ describe('fabrik', function () {
             });
         });
       });
-      it('At start of app, binding retrieval from BOSH fails & then subsequent create operation should provision mongodb and connect to DB Successfully', function () {
+      it('At start of app, binding retrieval from ApiServer fails & then subsequent create operation should provision mongodb and connect to DB Successfully', function () {
         this.timeout(25000);
-        bindPropertyFound = 2;
-        const dbManager = new DBManager();
+        errorsWithApiServer = true;
+        const dbManager = new DBManagerCreateWithDelayedReconnectRetry();
         deferred.reject(new errors.NotFound('Deployment not found'));
         return Promise.delay(5).then(() => {
           expect(dbManager.dbState).to.eql(CONST.DB.STATE.TB_INIT);
           expect(loggerWarnSpy).not.to.be.called;
-          expect(dbInitializeSpy).called;
-          bindPropertyFound = 1;
+          expect(dbInitializeForCreateSpy).called;
           let taskId;
+          errorsWithApiServer = false;
+          bindPropertyFoundOnApiServer = true
           return dbManager
             .createOrUpdateDbDeployment(true)
             .tap(out => taskId = out.task_id)
-            .then(() => Promise.delay(5000))
+            .then(() => Promise.delay(10))
             .then(() => {
               expect(getDeploymentStub).to.be.calledOnce;
               expect(getDeploymentStub.firstCall.args[0]).to.eql('service-fabrik-mongodb-new');
@@ -396,7 +433,8 @@ describe('fabrik', function () {
 
     describe('#update', function () {
       beforeEach(function () {
-        bindPropertyFound = 0;
+        bindPropertyFoundOnApiServer = true;
+        errorsWithApiServer = false;
       });
       afterEach(function () {
         failCreateUpdate = false;
@@ -435,14 +473,13 @@ describe('fabrik', function () {
         });
       });
       it('DB update should succeed but get binding must fail which should result in retrying the operation', function () {
-        bindPropertyFound = 2;
+        errorsWithApiServer = true;
         const dbManagerForUpdate = new DBManagerForUpdate();
         return Promise.delay(2).then(() => {
           expect(dbManagerForUpdate.dbState).to.eql(CONST.DB.STATE.TB_INIT);
           expect(loggerWarnSpy).not.to.be.called;
           expect(dbManagerForUpdate.dbInitialized).to.eql(false);
           let taskId;
-          bindPropertyFound = 2;
           return dbManagerForUpdate.createOrUpdateDbDeployment(false)
             .then(out => {
               taskId = out.task_id;
@@ -478,10 +515,11 @@ describe('fabrik', function () {
 
     describe('#getState', function () {
       afterEach(function () {
-        bindPropertyFound = 0;
+        bindPropertyFoundOnApiServer = true;
         failCreateUpdate = false;
       });
       it('get state of DB state of connected successfully', function () {
+        bindPropertyFoundOnApiServer = true;
         const dbManagerForUpdate = new DBManagerForUpdate();
         return Promise.delay(2).then(() => {
           dbConnectionState = 1;

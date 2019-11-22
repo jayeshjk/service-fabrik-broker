@@ -3,7 +3,7 @@
 const _ = require('lodash');
 const Promise = require('bluebird');
 const pubsub = require('pubsub-js');
-var moment = require('moment-timezone');
+var moment = require('moment-timezone'); // eslint-disable-line no-var
 const utils = require('../common/utils');
 const config = require('../common/config');
 const Scheduler = require('./Scheduler');
@@ -15,6 +15,15 @@ const logger = require('../common/logger');
 const CONST = require('../common/constants');
 
 class ScheduleManager {
+
+  static runNow(name, jobType, jobData, user) {
+    let agendaJob = {};
+    return scheduler
+      .runNow(name, jobType, jobData)
+      .tap(job => agendaJob = job)
+      .then(() => this.saveJob(name, jobType, 'now', jobData, user, true))
+      .then(jobInDB => this.getJobAttrs(jobInDB, agendaJob));
+  }
 
   static runAt(name, jobType, runAt, jobData, user, avoidDupJobWithSameData) {
     let agendaJob = {};
@@ -37,6 +46,12 @@ class ScheduleManager {
       } else if (interval === CONST.SCHEDULE.RANDOM) {
         const JobDefinition = JobFabrik.getJob(jobType);
         interval = JobDefinition.getRandomRepeatInterval();
+      } else {
+        // ensure safe cron expressions only
+        const isSafe = utils.isCronSafe(interval);
+        if (!isSafe) {
+          throw new errors.BadRequest(`invalid interval ${interval}. Safety validation failed. `);
+        }
       }
       return scheduler
         .schedule(name, jobType, interval, jobData)
@@ -61,8 +76,8 @@ class ScheduleManager {
       const everyXhrs = parseInt(/^[0-9]+/.exec(interval)[0]);
       logger.info(`schedule is to run every ${everyXhrs} hours`);
       if (24 % everyXhrs === 0) {
-        //only for intervals whose multiple leads to 24 can we create a random cron. 
-        //For ex., with 7, we cant create a true random cron as it can lead to '34 1,8,15,22 * * *'
+        // only for intervals whose multiple leads to 24 can we create a random cron. 
+        // For ex., with 7, we cant create a true random cron as it can lead to '34 1,8,15,22 * * *'
         return utils.getRandomCronForEveryDayAtXHoursInterval(everyXhrs);
       } else {
         return interval;
@@ -76,8 +91,8 @@ class ScheduleManager {
     let jobType = inputJobType;
     if (runOnce) {
       jobType = `${jobType}_${new Date().getTime()}`;
-      //If job is being run once, then it should always result in new entry,
-      //hence tweak insert criteria to ensure it never finds a record and always results in create.
+      // If job is being run once, then it should always result in new entry,
+      // hence tweak insert criteria to ensure it never finds a record and always results in create.
     }
     const criteria = {
       name: name,
@@ -93,7 +108,7 @@ class ScheduleManager {
     logger.debug(`Saving Job - ${name}`);
     return Repository
       .saveOrUpdate(CONST.DB_MODEL.JOB, jobDetails, criteria, user)
-      .then((jobInDb) => runOnce ? jobInDb : this.updateLastRunStatus(jobInDb, name, inputJobType));
+      .then(jobInDb => runOnce ? jobInDb : this.updateLastRunStatus(jobInDb, name, inputJobType));
   }
 
   static getSchedule(name, jobType) {
@@ -105,7 +120,7 @@ class ScheduleManager {
         agendaJob = job;
         logger.debug(`Job retrieved from agenda for : ${name} - ${jobType}`);
       })
-      .then((job) => {
+      .then(job => {
         if (job === null) {
           throw new errors.NotFound(`Schedule not found for instance ${name} for job type ${jobType}`);
         }
@@ -114,18 +129,24 @@ class ScheduleManager {
       .then(jobInDB => this.getJobAttrs(jobInDB, agendaJob));
   }
 
-  static cancelSchedule(name, jobType) {
-    logger.debug(`cancelling schedule : ${name}_${jobType}`);
+  static cancelSchedule(name, jobType, cancelAllJobs) {
+    logger.debug(`cancelling schedule : ${name}_${jobType}, with cancelAllJobs : ${cancelAllJobs}`);
     return scheduler
-      .cancelJob(name, jobType)
-      .then(() => this.deleteJob(name, jobType));
+      .cancelJob(name, jobType, cancelAllJobs)
+      .then(() => this.deleteJob(name, jobType, cancelAllJobs));
   }
 
-  static deleteJob(name, jobType) {
-    logger.debug(`Deleting Job : ${name}_${jobType}`);
+  static deleteJob(name, jobType, cancelAllJobs) {
+    logger.debug(`Deleting Job : ${name}_${jobType}, with cancelAllJobs : ${cancelAllJobs}`);
+    let typeCriteria = jobType;
+    if (cancelAllJobs) {
+      typeCriteria = {
+        $regex: `^${jobType}.*`
+      };
+    }
     const criteria = {
       name: name,
-      type: jobType
+      type: typeCriteria
     };
     return Repository.delete(CONST.DB_MODEL.JOB, criteria);
   }
@@ -145,8 +166,8 @@ class ScheduleManager {
       if (jobInDb !== null) {
         const JobDefinition = JobFabrik.getJob(jobType);
         if (JobDefinition.getLastRunStatus !== undefined && typeof JobDefinition.getLastRunStatus === 'function') {
-          const jobNameInRunHistory = jobInDb.data.instance_id || jobInDb.data.deployment_name || jobInDb.data._n_a_m_e_;
-          //see BaseJob.logRunHistory
+          const jobNameInRunHistory = _.get(jobInDb, 'data.instance_id') || _.get(jobInDb, 'data.deployment_name') || _.get(jobInDb, 'data._n_a_m_e_');
+          // see BaseJob.logRunHistory
           return JobDefinition
             .getLastRunStatus(jobNameInRunHistory, jobType)
             .then(jobRunStatus => jobInDb.lastRunDetails = jobRunStatus)
@@ -170,8 +191,8 @@ class ScheduleManager {
 
   static setupSystemJobs() {
     const systemJobDefinition = config.scheduler.system_jobs;
-    return Promise.map(systemJobDefinition, (jobDefinition) => {
-      //return added only for UT
+    return Promise.map(systemJobDefinition, jobDefinition => {
+      // return added only for UT
       if (jobDefinition.enabled === false) {
         logger.info('Cancelling system job', jobDefinition);
         return this.cancelSchedule(jobDefinition.name, jobDefinition.type);
@@ -192,7 +213,7 @@ class ScheduleManager {
                 jobDefinition.job_data,
                 CONST.SYSTEM_USER);
           } else {
-            logger.info(`System job: ${jobDefinition.name} of type ${jobDefinition.type} is already scheduled for ${jobDefinition.interval}`);
+            logger.info(`System job: ${jobDefinition.name} of type ${jobDefinition.type} is either already scheduled for ${jobDefinition.interval} or there is an error (see below...)`);
           }
         });
     });
@@ -211,7 +232,9 @@ class ScheduleManager {
         runOnlyOnce: true
       });
       criteria.push({
-        type: '/.*_[0-9]+/'
+        type: {
+          $regex: '.*_[0-9]+'
+        }
       });
       return scheduler
         .purgeOldFinishedJobs()

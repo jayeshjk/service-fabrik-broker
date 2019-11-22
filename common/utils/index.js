@@ -9,7 +9,10 @@ const crypto = require('crypto');
 const Readable = require('stream').Readable;
 const HttpClient = require('./HttpClient');
 const config = require('../config');
+const catalog = require('../models/catalog');
+const logger = require('../logger');
 const CONST = require('../constants');
+const decamelizeKeysDeep = require('decamelize-keys-deep');
 const RetryOperation = require('./RetryOperation');
 const randomBytes = Promise.promisify(crypto.randomBytes);
 const EventLogRiemannClient = require('./EventLogRiemannClient');
@@ -17,6 +20,7 @@ const EventLogDomainSocketClient = require('./EventLogDomainSocketClient');
 const EventLogDBClient = require('./EventLogDBClient');
 const EventLogInterceptor = require('../EventLogInterceptor');
 const errors = require('../errors');
+const NotImplemented = errors.NotImplemented;
 exports.HttpClient = HttpClient;
 exports.RetryOperation = RetryOperation;
 exports.promiseWhile = promiseWhile;
@@ -39,8 +43,10 @@ exports.deploymentNamesRegExp = deploymentNamesRegExp;
 exports.deploymentNameRegExp = deploymentNameRegExp;
 exports.getRandomInt = getRandomInt;
 exports.getRandomCronForOnceEveryXDays = getRandomCronForOnceEveryXDays;
+exports.getRandomCronForOnceEveryXDaysWeekly = getRandomCronForOnceEveryXDaysWeekly;
 exports.getRandomCronForEveryDayAtXHoursInterval = getRandomCronForEveryDayAtXHoursInterval;
 exports.getCronWithIntervalAndAfterXminute = getCronWithIntervalAndAfterXminute;
+exports.getCronAfterXMinuteFromNow = getCronAfterXMinuteFromNow;
 exports.isDBConfigured = isDBConfigured;
 exports.isFeatureEnabled = isFeatureEnabled;
 exports.isServiceFabrikOperation = isServiceFabrikOperation;
@@ -51,6 +57,54 @@ exports.unifyDiffResult = unifyDiffResult;
 exports.getBrokerAgentCredsFromManifest = getBrokerAgentCredsFromManifest;
 exports.initializeEventListener = initializeEventListener;
 exports.buildErrorJson = buildErrorJson;
+exports.deploymentLocked = deploymentLocked;
+exports.deploymentStaggered = deploymentStaggered;
+exports.parseServiceInstanceIdFromDeployment = parseServiceInstanceIdFromDeployment;
+exports.verifyFeatureSupport = verifyFeatureSupport;
+exports.isRestorePossible = isRestorePossible;
+exports.getPlatformManager = getPlatformManager;
+exports.getPlatformFromContext = getPlatformFromContext;
+exports.pushServicePlanToApiServer = pushServicePlanToApiServer;
+exports.getPlanCrdFromConfig = getPlanCrdFromConfig;
+exports.getServiceCrdFromConfig = getServiceCrdFromConfig;
+exports.registerInterOperatorCrds = registerInterOperatorCrds;
+exports.getAllServices = getAllServices;
+exports.getAllPlansForService = getAllPlansForService;
+exports.loadCatalogFromAPIServer = loadCatalogFromAPIServer;
+exports.getDefaultErrorMsg = getDefaultErrorMsg;
+exports.sleep = sleep;
+exports.isCronSafe = isCronSafe;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isRestorePossible(plan_id, plan) {
+  const settings = plan.manager.settings;
+  const restorePredecessors = settings.restore_predecessors || settings.update_predecessors || [];
+  const previousPlan = _.find(plan.service.plans, ['id', plan_id]);
+  return plan === previousPlan || _.includes(restorePredecessors, previousPlan.id);
+}
+
+function verifyFeatureSupport(plan, feature) {
+  if (!_.includes(plan.manager.settings.agent.supported_features, feature)) {
+    throw new NotImplemented(`Feature '${feature}' not supported`);
+  }
+}
+
+// valid format: sec|* (optional) min|* hour|* day|* month|* day of week|*
+function isCronSafe(interval) {
+  const parts = interval.trim().split(/\s+/);
+  if (parts.length < 5 || parts.length > 6) {
+    return false;
+  }
+  for(let i = 0; i < parts.length; i++) {
+    if (parts[i] != '*') {
+      return true;
+    }
+  }
+  return false;
+}
 
 function streamToPromise(stream, options) {
   const encoding = _.get(options, 'encoding', 'utf8');
@@ -76,14 +130,25 @@ function streamToPromise(stream, options) {
   });
 }
 
+function getPlatformFromContext(context) {
+  let platform = _.get(context, 'platform');
+  if (platform === CONST.PLATFORM.SM) {
+    return _.get(context, 'origin');
+  } else {
+    return platform;
+  }
+}
+
 function initializeEventListener(appConfig, appType) {
   const riemannOptions = _
     .chain({})
     .assign(config.riemann)
     .set('event_type', appConfig.event_type)
     .value();
-  const riemannClient = new EventLogRiemannClient(riemannOptions);
-  //if events are to be forwarded to monitoring agent via domain socket
+  if (riemannOptions.enabled !== false) {
+    const riemannClient = new EventLogRiemannClient(riemannOptions); // eslint-disable-line no-unused-vars
+  }
+  // if events are to be forwarded to monitoring agent via domain socket
   if (appConfig.domain_socket && appConfig.domain_socket.fwd_events) {
     /* jshint unused:false */
     const domainSockOptions = _
@@ -91,10 +156,10 @@ function initializeEventListener(appConfig, appType) {
       .set('event_type', appConfig.event_type)
       .set('path', appConfig.domain_socket.path)
       .value();
-    const domainSockClient = new EventLogDomainSocketClient(domainSockOptions);
+    const domainSockClient = new EventLogDomainSocketClient(domainSockOptions); // eslint-disable-line no-unused-vars
   }
   if (isDBConfigured()) {
-    const domainSockClient = new EventLogDBClient({
+    const domainSockClient = new EventLogDBClient({ // eslint-disable-line no-unused-vars
       event_type: appConfig.event_type
     });
   }
@@ -140,13 +205,13 @@ function demux(stream, options) {
     function onreadable() {
       while (read()) {
         switch (header.readUInt8(0)) {
-        case 2:
-          stderrLength++;
-          stderr.push(chunk);
-          break;
-        default:
-          stdoutLength++;
-          stdout.push(chunk);
+          case 2:
+            stderrLength++;
+            stderr.push(chunk);
+            break;
+          default:
+            stdoutLength++;
+            stdout.push(chunk);
         }
         takeRight(2 * options.tail);
         header = null;
@@ -253,12 +318,12 @@ function promiseWhile(condition, action) {
 function maskSensitiveInfo(target) {
   const mask = function (target, level) {
     const SENSITIVE_FIELD_NAMES = ['password', 'psswd', 'pwd', 'passwd', 'uri', 'url'];
-    //For now only the above fields are marked sensitive. If any additional keys are to be added, expand this list.
+    // For now only the above fields are marked sensitive. If any additional keys are to be added, expand this list.
     if (level === undefined || level < 0) {
       throw new Error('Level argument cannot be undefined or negative value');
     }
     if (level > 4) {
-      //Do not recurse beyond 5 levels in deep objects.
+      // Do not recurse beyond 5 levels in deep objects.
       return target;
     }
     if (!_.isPlainObject(target) && !_.isArray(target)) {
@@ -275,7 +340,7 @@ function maskSensitiveInfo(target) {
         }
       });
     } else if (_.isArray(target)) {
-      _.forEach(target, (value) => {
+      _.forEach(target, value => {
         if (_.isPlainObject(value) || _.isArray(value)) {
           mask(value, level + 1);
         }
@@ -290,17 +355,17 @@ function isDBConfigured() {
 }
 
 function isFeatureEnabled(name) {
-  var jobTypes = _.get(config, 'scheduler.job_types');
-  var jobTypeList = jobTypes !== undefined ? jobTypes.replace(/\s*/g, '').split(',') : [];
+  var jobTypes = _.get(config, 'scheduler.job_types'); // eslint-disable-line no-var
+  var jobTypeList = jobTypes !== undefined ? jobTypes.replace(/\s*/g, '').split(',') : []; // eslint-disable-line no-var
   switch (name) {
-  case CONST.FEATURE.SCHEDULED_UPDATE:
-    const scheduleUpdateEnabled = _.get(config, 'feature.ServiceInstanceAutoUpdate', false);
-    return scheduleUpdateEnabled && isDBConfigured() && jobTypeList.indexOf(name) !== -1;
-  case CONST.FEATURE.SCHEDULED_BACKUP:
-  case CONST.FEATURE.SCHEDULED_OOB_DEPLOYMENT_BACKUP:
-    return isDBConfigured() && jobTypeList.indexOf(name) !== -1;
-  default:
-    throw new Error(`Unknown feature : ${name}`);
+    case CONST.FEATURE.SCHEDULED_UPDATE:
+      const scheduleUpdateEnabled = _.get(config, 'feature.ServiceInstanceAutoUpdate', false);
+      return scheduleUpdateEnabled && isDBConfigured() && jobTypeList.indexOf(name) !== -1;
+    case CONST.FEATURE.SCHEDULED_BACKUP:
+    case CONST.FEATURE.SCHEDULED_OOB_DEPLOYMENT_BACKUP:
+      return isDBConfigured() && jobTypeList.indexOf(name) !== -1;
+    default:
+      throw new Error(`Unknown feature : ${name}`);
   }
 }
 
@@ -317,22 +382,30 @@ function deploymentNameRegExp(service_subnet) {
 }
 
 function taskIdRegExp() {
-  return new RegExp(`^([0-9a-z-]+)_([0-9]+)$`);
+  return new RegExp('^([0-9a-z-]+)_([0-9]+)$');
+}
+
+function parseServiceInstanceIdFromDeployment(deploymentName) {
+  const deploymentNameArray = deploymentNameRegExp().exec(deploymentName);
+  if (Array.isArray(deploymentNameArray) && deploymentNameArray.length === 4) {
+    return deploymentNameArray[3];
+  }
+  return deploymentName;
 }
 
 function getRandomInt(min, max) {
   min = Math.ceil(min);
   max = Math.floor(max);
   const factor = max - min === 1 ? 2 : (max - min);
-  //If we want a random of just 2 numbers then the factor must be 2, else it will always return back the lesser of two number always.
+  // If we want a random of just 2 numbers then the factor must be 2, else it will always return back the lesser of two number always.
   return Math.floor(Math.random() * (factor)) + min;
 }
 
 function getRandomCronForEveryDayAtXHoursInterval(everyXHours) {
   assert.ok((everyXHours > 0 && everyXHours <= 24), 'Input hours can be any number between 1 to 24 only');
   const min = exports.getRandomInt(0, 59);
-  //referred via exports to aid in stubbing for UT
-  let nthHour = exports.getRandomInt(0, everyXHours - 1); //Since we consider from 0
+  // referred via exports to aid in stubbing for UT
+  let nthHour = exports.getRandomInt(0, everyXHours - 1); // Since we consider from 0
   let hoursApplicable = `${nthHour}`;
   while (nthHour + everyXHours < 24) {
     nthHour = nthHour + everyXHours;
@@ -341,26 +414,72 @@ function getRandomCronForEveryDayAtXHoursInterval(everyXHours) {
   return `${min} ${hoursApplicable} * * *`;
 }
 
+/**
+ * Create a weekly cron
+ * @param {Object} options                          - Various options for weekly cron
+ * @param {string} [options.start_after_weekday=0]  - bound of the weekday to start the cron (inclusive)
+ * @param {string} [options.start_before_weekday=7] - bound of the weekday to end the cron (excluded)
+ * @param {string} [options.start_after_hr=0]       - bound of the hour to start the cron
+ * @param {string} [options.start_before_hr=23]     - bound of the hour to end the cron
+ * @param {string} [options.start_after_min=0]      - bound of the minute to start the cron
+ * @param {string} [options.start_before_min=59]    - bound of the minute to end the cron
+ */
+function getRandomCronForOnceEveryXDaysWeekly(options) {
+  const dayInterval = _.get(options, 'day_interval', 0);
+  // Get random hour
+  const startAfterHour = _.get(options, 'start_after_hr', 0);
+  const startBeforeHour = _.get(options, 'start_before_hr', 23);
+  const hr = exports.getRandomInt(startAfterHour, startBeforeHour);
+  // Get random minute
+  const startAfterMin = _.get(options, 'start_after_min', 0);
+  const startBeforeMin = _.get(options, 'start_before_min', 59);
+  const min = exports.getRandomInt(startAfterMin, startBeforeMin);
+  // Get Weekday bounds
+  const startAfterWeekday = _.get(options, 'start_after_weekday', 0);
+  const startBeforeWeekday = _.get(options, 'start_before_weekday', 7);
+  const day = exports.getRandomInt(startAfterWeekday, startBeforeWeekday);
+  // Validate the bounds
+  assert.ok((startAfterWeekday >= 0 && startAfterWeekday <= 6), 'Start day should be between 0-6');
+  assert.ok((startAfterWeekday < startBeforeWeekday), 'start_before_weekday should be greater than start_after_weekday');
+  // Get weekday cron based on interval
+  let weeklyCron;
+  // Default behavior will have dayInterval as 0
+  // hence will produce a cron with only one day included
+  // 34 11 * * 3
+  // which is "At 11:34 on Wednesday."
+  // for running multiple times in a week provide a interval between 0 and 4
+  // For and interval of 2 and start day of 3, cron:
+  // 34 11 * * 3,5
+  // the above cron runs at “At 11:34 on Wednesday and Friday.”
+  if (dayInterval === 0 || dayInterval >= 4) {
+    weeklyCron = `${min} ${hr} * * ${day}`;
+  } else {
+    const weekdays = _.toString(_.range(startAfterWeekday, startBeforeWeekday, dayInterval));
+    weeklyCron = `${min} ${hr} * * ${weekdays}`;
+  }
+  return weeklyCron;
+}
+
 function getRandomCronForOnceEveryXDays(days, options) {
   assert.ok((days > 0 && days < 28), 'Input days can be any number between 1 to 27 only');
   const maxDay = days <= 14 ? days : 28 - days;
-  //Considering only 28 days while scheduling to keep things simple.
+  // Considering only 28 days while scheduling to keep things simple.
   const startAfterHour = _.get(options, 'start_after_hr', 0);
   const startBeforeHour = _.get(options, 'start_before_hr', 23);
   const hr = exports.getRandomInt(startAfterHour, startBeforeHour);
   const startAfterMin = _.get(options, 'start_after_min', 0);
   const startBeforeMin = _.get(options, 'start_before_min', 59);
   const min = exports.getRandomInt(startAfterMin, startBeforeMin);
-  //referred via exports to aid in stubbing for UT
+  // referred via exports to aid in stubbing for UT
   const startDay = exports.getRandomInt(1, maxDay);
   let day = startDay;
   let daysApplicable = day;
   while (day + days <= 28 || ((31 - (day + days)) + (startDay - 1) >= days)) {
-    //days 29 - 31 are tricky and are not always applicable in every month. So keeping things simple.
-    //Second part of OR condition applicable only for shorter duration like once every 2days.
-    //NOTE: This function is not perfect in calculating once every xdays in cron.
-    //(Not sure if there could be a way to truly randomize and still have valid cron to get once every x days,
-    //but this is as good as it gets for now with randomization)
+    // days 29 - 31 are tricky and are not always applicable in every month. So keeping things simple.
+    // Second part of OR condition applicable only for shorter duration like once every 2days.
+    // NOTE: This function is not perfect in calculating once every xdays in cron.
+    // (Not sure if there could be a way to truly randomize and still have valid cron to get once every x days,
+    // but this is as good as it gets for now with randomization)
     day = day + days;
     daysApplicable = `${daysApplicable},${day}`;
   }
@@ -393,8 +512,8 @@ function getCronWithIntervalAndAfterXminute(interval, afterXminute) {
         nthHour = nthHour - everyXhrs;
         arrayOfHours.push(nthHour);
       }
-      //This to handle e.g. '7 hours' where 7 doesn't divide 24
-      //then it shoud run in every 7 hours a day including 0
+      // This to handle e.g. '7 hours' where 7 doesn't divide 24
+      // then it shoud run in every 7 hours a day including 0
       if (24 % everyXhrs !== 0 && _.indexOf(arrayOfHours, 0) === -1) {
         arrayOfHours.push(0);
       }
@@ -406,6 +525,18 @@ function getCronWithIntervalAndAfterXminute(interval, afterXminute) {
       message: 'interval should \'daily\' or in \'x hours\' format'
     });
   }
+  return interval;
+}
+
+function getCronAfterXMinuteFromNow(afterXminute) {
+  afterXminute = afterXminute || 3;
+  const currentTime = new Date().getTime();
+  const timeAfterXMinute = new Date(currentTime + afterXminute * 60 * 1000);
+  const hr = timeAfterXMinute.getHours();
+  const min = timeAfterXMinute.getMinutes();
+  const date = timeAfterXMinute.getDate();
+  const month = timeAfterXMinute.getMonth();
+  const interval = `${min} ${hr} ${date} ${month} *`;
   return interval;
 }
 
@@ -455,39 +586,51 @@ function hasChangesInForbiddenSections(diff) {
   return false;
 }
 
-function unifyDiffResult(result) {
+function unifyDiffResult(result, ignoreTags) {
   const diff = [];
+  let validDeploymentSection = true;
   _.each(result.diff, _.spread((value, type) => {
-    switch (type) {
-    case 'added':
-      diff.push(`+${value}`);
-      break;
-    case 'removed':
-      diff.push(`-${value}`);
-      break;
-    default:
-      diff.push(` ${value}`);
-      break;
+
+    if (_.includes(value, 'tags:') && ignoreTags) {
+      validDeploymentSection = false;
+    } else if (!validDeploymentSection && _.findIndex(CONST.BOSH_DEPLOYMENT_MANIFEST_SECTIONS, section => {
+      return _.includes(value, section);
+    }) != -1) {
+      validDeploymentSection = true;
+    }
+
+    if (validDeploymentSection) {
+      switch (type) {
+        case 'added':
+          diff.push(`+${value}`);
+          break;
+        case 'removed':
+          diff.push(`-${value}`);
+          break;
+        default:
+          diff.push(` ${value}`);
+          break;
+      }
     }
   }));
   return diff;
 }
 
 function getBrokerAgentCredsFromManifest(manifest) {
-  var brokerAgentNameRegex = RegExp('broker-agent');
+  var brokerAgentNameRegex = RegExp('broker-agent'); // eslint-disable-line no-var
   let authObject;
-  _.forEach(manifest.instance_groups, (instanceGroup) => {
+  _.forEach(manifest.instance_groups, instanceGroup => {
     if (authObject) {
       // break forEach
       return false;
     }
-    _.forEach(instanceGroup.jobs, (job) => {
+    _.forEach(instanceGroup.jobs, job => {
       if (brokerAgentNameRegex.test(job.name)) {
         authObject =
           _.chain({})
-          .set('username', job.properties.username)
-          .set('password', job.properties.password)
-          .value();
+            .set('username', job.properties.username)
+            .set('password', job.properties.password)
+            .value();
         // break forEach
         return false;
       }
@@ -502,4 +645,172 @@ function buildErrorJson(err, message) {
     status: err.status,
     message: message ? message : err.message
   };
+}
+
+function deploymentLocked(err) {
+  const response = _.get(err, 'error', {});
+  const description = _.get(response, 'description', '');
+  return description.indexOf(CONST.OPERATION_TYPE.LOCK) > 0 &&
+    _.includes([_.get(err, 'status'), _.get(err, 'statusCode'), _.get(response, 'status')], CONST.HTTP_STATUS_CODE.UNPROCESSABLE_ENTITY);
+}
+
+
+function deploymentStaggered(err) {
+  const response = _.get(err, 'error', {});
+  const description = _.get(response, 'description', '');
+  return description.indexOf(CONST.FABRIK_OPERATION_STAGGERED) > 0 && description.indexOf(CONST.FABRIK_OPERATION_COUNT_EXCEEDED) > 0;
+}
+
+function getPlatformManager(context) {
+  const BasePlatformManager = require('../../platform-managers/BasePlatformManager');
+  let platform = getPlatformFromContext(context);
+  const PlatformManager = (platform && CONST.PLATFORM_MANAGER[platform]) ? require(`../../platform-managers/${CONST.PLATFORM_MANAGER[platform]}`) : ((platform && CONST.PLATFORM_MANAGER[CONST.PLATFORM_ALIAS_MAPPINGS[platform]]) ? require(`../../platform-managers/${CONST.PLATFORM_MANAGER[CONST.PLATFORM_ALIAS_MAPPINGS[platform]]}`) : undefined);
+  if (PlatformManager === undefined) {
+    return new BasePlatformManager(platform);
+  } else {
+    return new PlatformManager(platform);
+  }
+}
+
+function getPlanCrdFromConfig(plan, service) {
+  assert.ok(plan.name, 'plan.name is required to generate plan crd');
+  assert.ok(plan.id, 'plan.id is required to generate plan crd');
+  assert.ok(plan.description, 'plan.description is required to generate plan crd');
+
+  let planCRD = {
+    apiVersion: 'osb.servicefabrik.io/v1alpha1',
+    kind: 'SFPlan',
+    metadata: {
+      name: plan.id,
+      labels: {
+        'controller-tools.k8s.io': '1.0',
+        serviceId: service.id
+      }
+    },
+    spec: {
+      name: plan.name,
+      id: plan.id,
+      serviceId: service.id,
+      description: plan.description,
+      free: plan.free ? true : service.free ? true : false,
+      bindable: plan.bindable ? plan.bindable : service.bindable ? service.bindable : false,
+      planUpdatable: plan.bindable ? true : false,
+      templates: plan.templates ? plan.templates : [],
+      metadata: plan.metadata,
+      manager: plan.manager,
+      context: plan.context
+    }
+  };
+  return planCRD;
+}
+
+function getServiceCrdFromConfig(service) {
+  assert.ok(service.name, 'service.name is required to generate plan crd');
+  assert.ok(service.id, 'service.id is required to generate plan crd');
+  assert.ok(service.description, 'service.description is required to generate plan crd');
+  assert.ok(service.bindable, 'service.bindable is required to generate plan crd');
+
+  let serviceCRD = {
+    apiVersion: 'osb.servicefabrik.io/v1alpha1',
+    kind: 'SFService',
+    metadata: {
+      name: service.id,
+      labels: {
+        'controller-tools.k8s.io': '1.0',
+        serviceId: service.id
+      }
+    },
+    spec: {
+      name: service.name,
+      id: service.id,
+      bindable: service.bindable,
+      description: service.description,
+      metadata: service.metadata,
+      tags: service.tags,
+      dashboardClient: service.dashboard_client,
+      planUpdateable: service.plan_updateable
+    }
+  };
+  return serviceCRD;
+}
+
+function pushServicePlanToApiServer() {
+  if (!config.apiserver.isServiceDefinitionAvailableOnApiserver) {
+    const eventmesh = require('../../data-access-layer/eventmesh');
+    return Promise.map(config.services, service => {
+      const servicePromise = eventmesh.apiServerClient.createOrUpdateServicePlan(getServiceCrdFromConfig(service));
+      return Promise.map(service.plans, plan => eventmesh.apiServerClient.createOrUpdateServicePlan(getPlanCrdFromConfig(plan, service))
+        .then(() => servicePromise));
+    });
+  }
+}
+
+function registerInterOperatorCrds() {
+  const eventmesh = require('../../data-access-layer/eventmesh');
+  return Promise.all([
+    eventmesh.apiServerClient.registerCrds(CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR, CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_SERVICES),
+    eventmesh.apiServerClient.registerCrds(CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR, CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_PLANS),
+    eventmesh.apiServerClient.registerCrds(CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR, CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_SERVICEINSTANCES),
+    eventmesh.apiServerClient.registerCrds(CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR, CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_SERVICEBINDINGS),
+    eventmesh.apiServerClient.registerCrds(CONST.APISERVER.RESOURCE_GROUPS.INSTANCE, CONST.APISERVER.RESOURCE_TYPES.SFEVENT)
+  ]);
+}
+
+function getAllServices() {
+  const eventmesh = require('../../data-access-layer/eventmesh');
+  return eventmesh.apiServerClient.getResources({
+    resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR,
+    resourceType: CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_SERVICES,
+    allNamespaces: true
+  })
+    .then(serviceList => {
+      let services = [];
+      _.forEach(serviceList, service => {
+        services = _.concat(services, [decamelizeKeysDeep(service.spec)]);
+      });
+      return services;
+    });
+}
+
+function getAllPlansForService(serviceId) {
+  const eventmesh = require('../../data-access-layer/eventmesh');
+  return eventmesh.apiServerClient.getResources({
+    resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.INTEROPERATOR,
+    resourceType: CONST.APISERVER.RESOURCE_TYPES.INTEROPERATOR_PLANS,
+    query: {
+      labelSelector: `serviceId=${serviceId}`
+    },
+    allNamespaces: true
+  })
+    .then(planList => {
+      let plans = [];
+      _.forEach(planList, plan => {
+        plans = _.concat(plans, [plan.spec]);
+      });
+      return plans;
+    });
+}
+
+function loadCatalogFromAPIServer() {
+  if (config.apiserver.isServiceDefinitionAvailableOnApiserver) {
+    return getAllServices()
+      .tap(services => {
+        config.services = services;
+      })
+      .then(services => {
+        return Promise.all(Promise.each(services, service => {
+          return getAllPlansForService(service.id)
+            .then(plans => {
+              service.plans = plans;
+            });
+        }));
+      })
+      .then(() => catalog.reload())
+      .tap(() => logger.silly('Loaded Services in catalog Are ', catalog.services))
+      .tap(() => logger.silly('Loaded Plans in catalog Are ', catalog.plans));
+  }
+}
+
+function getDefaultErrorMsg(err) {
+  return `Service Broker Error, status code: ${err.code ? err.code : CONST.HTTP_STATUS_CODE.INTERNAL_SERVER_ERROR}, error code: ${err.statusCode ? err.statusCode : CONST.ERR_STATUS_CODES.BROKER.DEFAULT}, message: ${err.message}`;
 }

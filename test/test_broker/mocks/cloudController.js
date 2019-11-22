@@ -2,11 +2,10 @@
 
 const _ = require('lodash');
 const nock = require('nock');
-const lib = require('../../../broker/lib');
 const config = require('../../../common/config');
 const cloudControllerUrl = config.cf.url;
-const DirectorManager = lib.fabrik.DirectorManager;
 const prefix = 'service-fabrik';
+const DirectorService = require('../../../operators/bosh-operator/DirectorService');
 
 exports.url = cloudControllerUrl;
 exports.getInfo = getInfo;
@@ -43,12 +42,13 @@ function getSecurityGroupName(guid) {
   return `${prefix}-${guid}`;
 }
 
-function createSecurityGroup(guid) {
+function createSecurityGroup(guid, responseCode, times) {
   const name = getSecurityGroupName(guid);
   return nock(cloudControllerUrl)
     .replyContentLength()
     .post('/v2/security_groups', body => body.name === name)
-    .reply(201, {
+    .times(times || 1)
+    .reply(responseCode || 201, {
       metadata: {
         guid: guid
       },
@@ -58,8 +58,17 @@ function createSecurityGroup(guid) {
     });
 }
 
-function findSecurityGroupByName(guid) {
+function findSecurityGroupByName(guid, resources) {
   const name = getSecurityGroupName(guid);
+  const defaults = [{
+    metadata: {
+      guid: guid
+    },
+    entity: {
+      name: name
+    }
+  }];
+  resources = resources || defaults;
   return nock(cloudControllerUrl)
     .replyContentLength()
     .get('/v2/security_groups')
@@ -67,14 +76,7 @@ function findSecurityGroupByName(guid) {
       q: `name:${name}`
     })
     .reply(200, {
-      resources: [{
-        metadata: {
-          guid: guid
-        },
-        entity: {
-          name: name
-        }
-      }]
+      resources: resources
     });
 }
 
@@ -271,7 +273,7 @@ function getServiceInstances(plan_guid, size, space_guid, org_guid) {
     .chain(mocks.director.getDeploymentNames(size))
     .map(deployment => ({
       metadata: {
-        guid: _.nth(DirectorManager.parseDeploymentName(deployment.name), 2)
+        guid: _.nth(DirectorService.parseDeploymentName(deployment.name), 2)
       },
       entity: {
         service_plan_guid: plan_guid,
@@ -311,7 +313,7 @@ function getServiceInstancesInSpaceWithName(instance_name, space_guid, present) 
     });
 }
 
-function findServicePlanByInstanceId(instance_id, plan_guid, plan_unique_id, resources) {
+function findServicePlanByInstanceId(instance_id, plan_guid, plan_unique_id, resources, times) {
   const defaultResources = [{
     metadata: {
       guid: plan_guid
@@ -325,12 +327,40 @@ function findServicePlanByInstanceId(instance_id, plan_guid, plan_unique_id, res
     .query({
       q: `service_instance_guid:${instance_id}`
     })
+    .times(times || 1)
     .reply(200, {
       resources: resources ? resources : defaultResources
     });
 }
 
-function getSpaceDevelopers(space_guid) {
+function getSpaceDevelopers(space_guid, includeUser) {
+  let resources = [{
+    metadata: {
+      guid: 'me',
+    },
+    entity: {
+      username: 'me',
+    }
+  }, {
+    metadata: {
+      guid: 'admin',
+    },
+    entity: {
+      username: 'admin',
+    }
+  }];
+
+  if (includeUser) {
+    resources.push({
+      metadata: {
+        guid: includeUser,
+      },
+      entity: {
+        username: includeUser,
+      }
+    });
+  }
+
   return nock(cloudControllerUrl, {
       reqheaders: {
         authorization: /^bearer/i
@@ -339,20 +369,6 @@ function getSpaceDevelopers(space_guid) {
     .get(`/v2/spaces/${space_guid}/developers`)
     .reply(200, {
       next_url: null,
-      resources: [{
-        metadata: {
-          guid: 'me',
-        },
-        entity: {
-          username: 'me',
-        }
-      }, {
-        metadata: {
-          guid: 'admin',
-        },
-        entity: {
-          username: 'admin',
-        }
-      }]
+      resources: resources
     });
 }

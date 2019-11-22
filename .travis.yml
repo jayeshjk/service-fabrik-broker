@@ -1,44 +1,112 @@
 ---
-language: node_js
-node_js:
-  - "6.9"
-before_install:
-  - pip install --user truffleHog==2.0.89
-  - |
-    pushd /tmp
-    git clone --depth 1 https://github.com/awslabs/git-secrets
-    cd git-secrets
-    sudo make install
-    popd
-env:
-  - SETTINGS_PATH="$(pwd)/broker/config/settings.yml"
-script:
-  - |
-     git secrets --install
-     git secrets --register-aws --global
-     git secrets --list
-     IFS='' CHANGED_FILES=$(npm run -s jsformat -- | grep -v "unchanged")
-     [[ -z $CHANGED_FILES ]] && NUM_CHANGED_FILES=0 || NUM_CHANGED_FILES=$(echo $CHANGED_FILES | wc -l)
-     echo "Code formatting to be fixed in $NUM_CHANGED_FILES file(s)..."
-     if [[ $NUM_CHANGED_FILES -gt 0 ]]; then
-       echo "Listing modifications required.."
-       git diff
-       echo "FAILED: Run js-beautify(npm run jsformat)" && exit 1;
-     else
-       echo "No changes to the code formatting required.. "
-     fi
-  - "npm run -s jshint-ci"
-  - "npm run -s test-coverall"
-  - "npm run -s jsdoc"
-  - |
-     git secrets --scan-history || exit 1
-  # - |
-  #    echo "Full repo scan of truffleHog"
-  #    # truffleHog only scans git endpoints which have a ref.
-  #    # truffleHog check fails to detect changed because travis merge creates a detached HEAD
-  #    # Creating a branch to fix this issue
-  #    git checkout -b travis-merge
-  #    INITIAL_COMMIT="26697a04e6890c0fc2226cf8c4e228c95586254c"
-  #    high_entropy=$(trufflehog --json --entropy true --since_commit "$INITIAL_COMMIT" --regex "$TRAVIS_BUILD_DIR")
-  #    echo "Truffle hog output : $high_entropy"
-  #    if [[ "$high_entropy" != "" ]] ; then exit 1; fi
+matrix:
+  include:
+    - language: go
+      os:
+        - linux
+      go:
+        - "1.13"
+      git:
+        depth: 3
+      install:
+        - cd interoperator
+        - env GO111MODULE=on go mod download
+        - cd ..
+      script:
+        - pushd interoperator
+        - ./scripts/install_test.sh
+        - env GO111MODULE=on go test -v -coverprofile=coverage.txt ./...
+        - popd
+        - cat interoperator/coverage.txt webhooks/coverage.txt | grep -v "/pkg/client/" > coverage.txt
+      after_success:
+        - bash <(curl -s https://codecov.io/bash)
+    - language: go
+      os:
+        - linux
+      go:
+        - "1.11"
+      git:
+        depth: 3
+      before_install:
+        - curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
+      install:
+        - pushd interoperator
+        - env KUBEBUILDER_VERSION=v1.0.7 ./scripts/install_test.sh
+        - popd
+        - cd webhooks
+        - dep ensure -v
+        - cd ..
+      script:
+        - pushd webhooks
+        - go test -v -coverpkg=./pkg/webhooks/... -coverprofile=coverage.txt ./pkg/webhooks/manager/...
+        - popd
+    - language: go
+      os:
+        - linux
+      go:
+        - "1.13"
+      git:
+        depth: 3
+      before_install:
+        - curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
+        - go get golang.org/x/lint/golint
+      install:
+        - cd interoperator
+        - env GO111MODULE=on go mod download
+        - cd ../webhooks
+        - dep ensure -v
+        - cd ..
+      script:
+        - pushd interoperator
+        - env GO111MODULE=on go fmt ./api/... ./controllers/... ./internal/... ./pkg/... ./
+        - env GO111MODULE=on go vet ./api/... ./controllers/... ./internal/... ./pkg/... ./
+        - env GO111MODULE=on golint ./api/... ./controllers/... ./internal/... ./pkg/... ./
+        - popd
+        - pushd webhooks
+        - go fmt ./pkg/webhooks/manager/... ./pkg/apis/...
+        - go vet ./pkg/webhooks/manager/... ./pkg/apis/...
+        - golint ./pkg/webhooks/manager/... ./pkg/apis/...
+        - popd
+    - language: node_js
+      node_js:
+        - "8.14"
+      env:
+        - SETTINGS_PATH="$(pwd)/broker/config/settings.yml"
+      script:
+        - "npm run -s test-coverall"
+    - language: node_js
+      node_js:
+        - "8.14"
+      env:
+        - SETTINGS_PATH="$(pwd)/broker/config/settings.yml"
+      script:
+        - "npm run -s eslint"
+        - "npm run -s jsdoc"
+    - language: node_js
+      node_js:
+        - "8.14"
+      before_install:
+        # - pip install --user truffleHog==2.0.89
+        - |
+          pushd /tmp
+          git clone --depth 1 https://github.com/awslabs/git-secrets
+          cd git-secrets
+          sudo make install
+          popd
+      script:
+        - |
+          git secrets --install
+          git secrets --register-aws --global
+          git secrets --list
+        - |
+          git secrets --scan-history || exit 1
+        - |
+          # echo "Full repo scan of truffleHog"
+          # truffleHog only scans git endpoints which have a ref.
+          # truffleHog check fails to detect changed because travis merge creates a detached HEAD
+          # Creating a branch to fix this issue
+          # git checkout -b travis-merge
+          # INITIAL_COMMIT="a1206f7a64978e70441460f9f907c2904909a531"
+          # high_entropy=$(trufflehog --json --entropy true --max_depth 1 --regex "$TRAVIS_BUILD_DIR")
+          # echo "Truffle hog output : $high_entropy"
+          # if [[ "$high_entropy" != "" ]] ; then exit 1; fi

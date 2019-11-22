@@ -7,10 +7,12 @@ const azureClient = require('./azureClient');
 const cloudController = require('./cloudController');
 const cloudProvider = require('./cloudProvider');
 const uaa = require('./uaa');
+const metering = require('./metering');
 const director = require('./director');
 const docker = require('./docker');
 const agent = require('./agent');
 const virtualHostAgent = require('./virtualHostAgent');
+const multitenancyAgent = require('./multitenancyAgent');
 const serviceFabrikClient = require('./serviceFabrikClient');
 const serviceBrokerClient = require('./serviceBrokerClient');
 const deploymentHookClient = require('./deploymentHookClient');
@@ -22,10 +24,12 @@ exports.azureClient = azureClient;
 exports.cloudController = cloudController;
 exports.cloudProvider = cloudProvider;
 exports.uaa = uaa;
+exports.metering = metering;
 exports.director = director;
 exports.docker = docker;
 exports.agent = agent;
 exports.virtualHostAgent = virtualHostAgent;
+exports.multitenancyAgent = multitenancyAgent;
 exports.serviceFabrikClient = serviceFabrikClient;
 exports.serviceBrokerClient = serviceBrokerClient;
 exports.deploymentHookClient = deploymentHookClient;
@@ -42,6 +46,7 @@ function init() {
 
 function verify() {
   /* jshint expr:true */
+  logger.info('checking mocks: %j', nock.pendingMocks());
   if (!nock.isDone()) {
     logger.error('pending mocks: %j', nock.pendingMocks());
   }

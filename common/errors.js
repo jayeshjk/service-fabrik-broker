@@ -1,5 +1,6 @@
 'use strict';
 
+const _ = require('lodash');
 const CONST = require('./constants');
 
 function createSymbol(name) {
@@ -10,9 +11,10 @@ function createSymbol(name) {
 const descriptionSymbol = createSymbol('description');
 
 class BaseError extends Error {
-  constructor(message) {
+  constructor(message, statusCode) {
     super(message);
     this.name = this.constructor.name;
+    this.statusCode = statusCode ? statusCode : CONST.ERR_STATUS_CODES.BROKER.DEFAULT;
     Error.captureStackTrace(this, this.constructor);
   }
 
@@ -26,6 +28,14 @@ class BaseError extends Error {
 }
 exports.BaseError = BaseError;
 
+class SshConnectionFailed extends BaseError {
+  constructor(message) {
+    super(message);
+    this.code = 'ETIMEDOUT';
+  }
+}
+exports.SshConnectionFailed = SshConnectionFailed;
+
 class DeploymentDelayed extends BaseError {
   constructor(deploymentName) {
     super(deploymentName);
@@ -33,14 +43,6 @@ class DeploymentDelayed extends BaseError {
   }
 }
 exports.DeploymentDelayed = DeploymentDelayed;
-
-class CacheUpdateError extends BaseError {
-  constructor(keyName) {
-    super(keyName);
-    this.code = 'ETCDERROR';
-  }
-}
-exports.CacheUpdateError = CacheUpdateError;
 
 class ContinueWithNext extends BaseError {
   constructor() {
@@ -60,11 +62,13 @@ class Timeout extends BaseError {
       this.error = new Error(error);
     }
   }
-  static timedOut(time, err) {
-    return new Timeout(`Operation timed out after ${time} ms`, err);
+  static timedOut(time, err, operation) {
+    const msg = `Operation ${operation ? operation + ' ' : ''}timed out after ${time} ms${_.get(err, 'description') ? ' Error from Service Agent - ' + err.description : ''}`;
+    return new Timeout(msg, err);
   }
-  static toManyAttempts(attempts, err) {
-    return new Timeout(`Operation failed after ${attempts} attempts`, err);
+  static toManyAttempts(attempts, err, operation) {
+    const msg = `Operation ${operation ? operation + ' ' : ''}failed after ${attempts} attempts${_.get(err, 'description') ? ' Error from Service Agent - ' + err.description : ''}`;
+    return new Timeout(msg, err);
   }
 }
 exports.Timeout = Timeout;
@@ -95,9 +99,23 @@ class NotImplementedBySubclass extends BaseError {
 }
 exports.NotImplementedBySubclass = NotImplementedBySubclass;
 
+class InstanceSharingNotAllowed extends BaseError {
+  constructor() {
+    super('Service instance sharing not enabled');
+  }
+}
+exports.InstanceSharingNotAllowed = InstanceSharingNotAllowed;
+
+class CrossOrganizationSharingNotAllowed extends BaseError {
+  constructor() {
+    super('Service instance cannot be shared across Cloud Foundry organizations');
+  }
+}
+exports.CrossOrganizationSharingNotAllowed = CrossOrganizationSharingNotAllowed;
+
 class HttpError extends BaseError {
-  constructor(status, reason, message) {
-    super(message);
+  constructor(status, reason, message, statusCode) {
+    super(message, statusCode);
     this.status = status;
     this.reason = reason;
   }
@@ -105,18 +123,25 @@ class HttpError extends BaseError {
 exports.HttpError = HttpError;
 
 class HttpClientError extends HttpError {
-  constructor(status, reason, message) {
-    super(status, reason, message);
+  constructor(status, reason, message, statusCode) {
+    super(status, reason, message, statusCode);
   }
 }
 exports.HttpClientError = HttpClientError;
 
 class BadRequest extends HttpClientError {
-  constructor(message) {
-    super(CONST.HTTP_STATUS_CODE.BAD_REQUEST, 'Bad Request', message);
+  constructor(message, statusCode) {
+    super(CONST.HTTP_STATUS_CODE.BAD_REQUEST, 'Bad Request', message, statusCode);
   }
 }
 exports.BadRequest = BadRequest;
+
+class InvalidServiceParameters extends BadRequest {
+  constructor(message) {
+    super(message);
+  }
+}
+exports.InvalidServiceParameters = InvalidServiceParameters;
 
 class Unauthorized extends HttpClientError {
   constructor(message) {
@@ -133,11 +158,19 @@ class Forbidden extends HttpClientError {
 exports.Forbidden = Forbidden;
 
 class NotFound extends HttpClientError {
-  constructor(message) {
-    super(CONST.HTTP_STATUS_CODE.NOT_FOUND, 'Not Found', message);
+  constructor(message, statusCode) {
+    super(CONST.HTTP_STATUS_CODE.NOT_FOUND, 'Not Found', message, statusCode);
   }
 }
 exports.NotFound = NotFound;
+
+class PageNotFound extends NotFound {
+  constructor(message, statusCode) {
+    super(CONST.HTTP_STATUS_CODE.NOT_FOUND, 'Page Not Found', message, statusCode);
+  }  
+}
+
+exports.PageNotFound = PageNotFound;
 
 class MethodNotAllowed extends HttpClientError {
   constructor(method, allow) {
@@ -229,14 +262,14 @@ exports.ServiceInstanceNotOperational = ServiceInstanceNotOperational;
 
 class ServiceInstanceNotFound extends NotFound {
   constructor(id) {
-    super(`Could not find Service Instance with ID ${id}`);
+    super(`Could not find Service Instance with ID ${id}`, CONST.ERR_STATUS_CODES.BOSH.DEPLOYMENT_NOT_FOUND);
   }
 }
 exports.ServiceInstanceNotFound = ServiceInstanceNotFound;
 
 class ServiceInstanceAlreadyExists extends BadRequest {
   constructor(id) {
-    super(`Service Instance with ID ${id} already exists`);
+    super(`Service Instance with ID ${id} already exists`, CONST.ERR_STATUS_CODES.BOSH.DEPLOYMENT_ALREADY_EXISTS);
   }
 }
 exports.ServiceInstanceAlreadyExists = ServiceInstanceAlreadyExists;
@@ -271,14 +304,14 @@ exports.ServiceBrokerNotFound = ServiceBrokerNotFound;
 
 class AsyncRequired extends UnprocessableEntity {
   constructor() {
-    super(`Service Plan requires support for asynchronous operations`);
+    super('Service Plan requires support for asynchronous operations');
   }
 }
 exports.AsyncRequired = AsyncRequired;
 
 class HttpServerError extends HttpError {
-  constructor(status, reason, message) {
-    super(status, reason, message);
+  constructor(status, reason, message, statusCode) {
+    super(status, reason, message, statusCode);
   }
 }
 exports.HttpServerError = HttpServerError;
@@ -326,11 +359,25 @@ class FeatureNotSupportedByAnyAgent extends BadGateway {
 exports.FeatureNotSupportedByAnyAgent = FeatureNotSupportedByAnyAgent;
 
 class ServiceUnavailable extends HttpServerError {
-  constructor(message) {
-    super(503, 'Service Unavailable', message);
+  constructor(message, statusCode) {
+    super(503, 'Service Unavailable', message, statusCode);
   }
 }
 exports.ServiceUnavailable = ServiceUnavailable;
+
+class DirectorServiceUnavailable extends ServiceUnavailable {
+  constructor(message) {
+    super(message, CONST.ERR_STATUS_CODES.BOSH.DIRECTOR_UNAVAILABLE);
+  }
+}
+exports.DirectorServiceUnavailable = DirectorServiceUnavailable;
+
+class DockerServiceUnavailable extends ServiceUnavailable {
+  constructor(message) {
+    super(message, CONST.ERR_STATUS_CODES.DOCKER.DOCKER_UNAVAILABLE);
+  }
+}
+exports.DockerServiceUnavailable = DockerServiceUnavailable;
 
 class DBUnavailable extends HttpServerError {
   constructor(message) {

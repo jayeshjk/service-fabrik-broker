@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const config = require('../config');
 const CONST = require('../constants');
+const RsaKeyGenerator = require('./RsaKeyGenerator');
 
 class EncryptionManager {
 
@@ -12,10 +13,14 @@ class EncryptionManager {
   }
 
   decrypt(text) {
-    var decipher = crypto.createDecipheriv(CONST.ENCRYPTION.AES_256_ALGORITHM, config.apiserver.encryption.key, config.apiserver.encryption.initialization_vector);
+    var decipher = crypto.createDecipheriv(CONST.ENCRYPTION.AES_256_ALGORITHM, config.apiserver.encryption.key, config.apiserver.encryption.initialization_vector); // eslint-disable-line no-var
     return decipher.update(text, CONST.ENCRYPTION.OUTPUT_ENCODING, CONST.ENCRYPTION.INPUT_ENCODING);
   }
 
+  async generateSshKeyPair(tempUser) { // jshint ignore: line
+    const sshKeyGenerator = new RsaKeyGenerator(tempUser);
+    return await sshKeyGenerator.createKeyPair(); // jshint ignore: line
+  }
 }
 
 module.exports = EncryptionManager;

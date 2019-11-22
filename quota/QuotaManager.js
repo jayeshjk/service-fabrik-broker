@@ -15,10 +15,7 @@ class QuotaManager {
 
   checkQuota(orgId, planId, previousPlanId, reqMethod) {
     return Promise.try(() => {
-      if (!_.get(config.quota, 'enabled')) {
-        logger.debug('Quota check is not enabled');
-        return CONST.QUOTA_API_RESPONSE_CODES.VALID_QUOTA;
-      } else if (CONST.HTTP_METHOD.PATCH === reqMethod && this.isSamePlanOrSkuUpdate(planId, previousPlanId)) {
+      if (CONST.HTTP_METHOD.PATCH === reqMethod && this.isSamePlanOrSkuUpdate(planId, previousPlanId)) {
         logger.debug('Quota check skipped as it is a normal instance update or plan update with same sku.');
         return CONST.QUOTA_API_RESPONSE_CODES.VALID_QUOTA;
       } else {
@@ -72,7 +69,7 @@ class QuotaManager {
       logger.debug(`SKUName is ${skuName}`);
       const planIdsWithSameSKU = [];
       const service = _.find(serviceCatalog.services, ['name', serviceName]);
-      _.each(service.plans, (plan) => {
+      _.each(service.plans, plan => {
         if (plan.name.endsWith(skuName) && plan.manager.name === planManagerName) {
           planIdsWithSameSKU.push(plan.id);
           logger.debug(`Found a plan with name as ${plan.name} which contains the skuName ${skuName}`);

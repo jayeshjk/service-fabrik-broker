@@ -53,6 +53,18 @@ describe('Jobs', function () {
     const repeatTimezone = 'America/New_York';
     const time = Date.now();
     const username = 'admin';
+    const dummyDeploymentResource = {
+      spec: {
+        options: JSON.stringify({
+          service_id: service_id,
+          plan_id: plan_id,
+          context: {
+            platform: 'cloudfoundry',
+          },
+          space_guid: space_guid,
+        })
+      }
+    };
     const scheduled_data = {
       trigger: CONST.BACKUP.TRIGGER.SCHEDULED,
       type: 'online',
@@ -138,12 +150,12 @@ describe('Jobs', function () {
     });
 
     beforeEach(function () {
-      baseJobLogRunHistoryStub.reset();
+      baseJobLogRunHistoryStub.resetHistory();
     });
 
     afterEach(function () {
       mocks.reset();
-      baseJobLogRunHistoryStub.reset();
+      baseJobLogRunHistoryStub.resetHistory();
     });
 
     after(function () {
@@ -177,7 +189,7 @@ describe('Jobs', function () {
       ]);
       mocks.cloudProvider.download(pathname16Oob, scheduled_data_oob, 2);
       //Mocks done
-      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule', getJob);
+      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule').callsFake(getJob);
       return BackupReaperJob.run(job, () => {
         mocks.verify();
         const expectedBackupResponse = {
@@ -210,7 +222,7 @@ describe('Jobs', function () {
       mocks.cloudProvider.list(container, `${prefixOob}.${backup_guid2Oob}`, [
         fileName18DaysPriorOob
       ]);
-      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule', getJob);
+      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule').callsFake(getJob);
       return BackupReaperJob.run(job, () => {
         mocks.verify();
         const expectedBackupResponse = {
@@ -243,12 +255,12 @@ describe('Jobs', function () {
       mocks.cloudProvider.list(container, `${prefixOob}.${backup_guid2Oob}`, [
         fileName18DaysPriorOob
       ]);
-      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule', () => {
+      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule').callsFake(() => {
         return Promise.try(() => {
           throw new NotFound('Schedulde not found.');
         });
       });
-      mocks.cloudController.findServicePlan(instance_id, plan_id);
+      mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
       mocks.director.getDeployment(deploymentName, true);
       return BackupReaperJob.run(job, () => {
         mocks.verify();
@@ -292,12 +304,12 @@ describe('Jobs', function () {
       ]);
       mocks.cloudProvider.remove(`/${blueprintContainer}/${backup_guid2Oob}/volume.tgz.enc`);
       mocks.cloudProvider.remove(pathname18Oob);
-      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule', () => {
+      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule').callsFake(() => {
         return Promise.try(() => {
           throw new NotFound('Schedulde not found.');
         });
       });
-      mocks.cloudController.findServicePlan(instance_id);
+      mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, {}, 1, 404);
       mocks.director.getDeployment(deploymentName, false, undefined, 2);
       return BackupReaperJob.run(job, () => {
         mocks.verify();
@@ -337,7 +349,7 @@ describe('Jobs', function () {
       ]);
       mocks.cloudProvider.download(pathname16Oob, _.chain(scheduled_data_oob).omit('container').value());
       //Mocks done
-      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule', getJob);
+      getScheduleStub = sinon.stub(ScheduleManager, 'getSchedule').callsFake(getJob);
       return BackupReaperJob.run(job, () => {
         mocks.verify();
         const expectedBackupResponse = {

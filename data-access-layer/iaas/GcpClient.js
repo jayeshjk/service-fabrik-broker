@@ -30,18 +30,88 @@ class GcpClient extends BaseCloudClient {
     );
   }
 
+  getDiskMetadata(diskId, zone) {
+    return Promise.try(() =>
+      this.computeClient
+        .zone(zone)
+        .disk(diskId)
+        .get()
+        .then(diskData => diskData[0].metadata)
+        .then(metadata => {
+          return {
+            volumeId: metadata.name,
+            size: metadata.sizeGb,
+            zone: metadata.zone.substring(metadata.zone.lastIndexOf('/') + 1),
+            type: metadata.type.substring(metadata.type.lastIndexOf('/') + 1),
+            extra: {
+              tags: metadata.labels,
+              type: metadata.type
+            }
+          };
+        })
+    );
+  }
+
+  createDiskFromSnapshot(snapshotId, zone, opts = {}) {
+    return new Promise((resolve, reject) => {
+      const diskName = this.getRandomDiskId();
+      const options = {
+        sourceSnapshot: `global/snapshots/${snapshotId}`,
+        description: 'disk created via service fabrik',
+        type: `projects/${this.settings.projectId || this.settings.credentials.project_id}/zones/${zone}/diskTypes/${opts.type}`,
+        labels: _.assign({}, opts.tags || {}, {
+          createdby: 'service-fabrik'
+        })
+      };
+
+      const cleanup = () => {
+        createDiskOperation.removeAllListeners();
+      };
+
+      const onerror = err => {
+        cleanup();
+        reject(err);
+      };
+
+      const oncomplete = () => {
+        cleanup();
+        logger.info(`created disk ${diskName} from snapshot ${snapshotId}`);
+        this.getDiskMetadata(diskName, zone)
+          .then(disk => resolve(disk))
+          .catch(err => reject(err));
+      };
+
+      let createDiskOperation;
+      this.computeClient
+        .zone(zone)
+        .createDisk(diskName, options)
+        .then(data => {
+          createDiskOperation = data[1];
+          createDiskOperation.on('complete', oncomplete);
+          createDiskOperation.on('error', onerror);
+        })
+        .catch(err => {
+          logger.error(
+            `Error creating disk ${diskName} from snapshot ${snapshotId}`,
+            err
+          );
+          reject(err);
+        });
+    });
+  }
+
   getContainer(container) {
     if (arguments.length < 1) {
       container = this.containerName;
     }
     return Promise.try(() =>
       this.storageClient
-      .bucket(container)
-      .get()
-      .then(result => {
+        .bucket(container)
+        .get()
+        .then(result => {
         // return the bucket metadata
-        return result[1];
-      })
+          return result[1];
+        })
     );
   }
 
@@ -57,14 +127,14 @@ class GcpClient extends BaseCloudClient {
     queryOptions.autoPaginate = true;
     return Promise.try(() =>
       this.storageClient
-      .bucket(container)
-      .getFiles(queryOptions)
-      .then(results => {
-        return _.get(results, 0, []).map(file => ({
-          name: file.name,
-          lastModified: file.metadata.updated
-        }));
-      })
+        .bucket(container)
+        .getFiles(queryOptions)
+        .then(results => {
+          return _.get(results, 0, []).map(file => ({
+            name: file.name,
+            lastModified: file.metadata.updated
+          }));
+        })
     );
   }
 
@@ -75,12 +145,12 @@ class GcpClient extends BaseCloudClient {
     }
     logger.debug(`Deleting file ${file} in container ${container} `);
     return Promise.try(() =>
-        this.storageClient
+      this.storageClient
         .bucket(container)
         .file(file)
         .delete()
         .then(() => logger.info(`Deleted file ${file} in container ${container}`))
-      )
+    )
       .catchThrow(BaseCloudClient.providerErrorTypes.Unauthorized,
         new Unauthorized(`Authorization at google cloud storage provider failed while deleting blob ${file} in container ${container}`))
       .catchThrow(BaseCloudClient.providerErrorTypes.Forbidden,
@@ -91,9 +161,9 @@ class GcpClient extends BaseCloudClient {
 
   download(options) {
     return utils.streamToPromise(this.storageClient
-        .bucket(options.container)
-        .file(options.remote)
-        .createReadStream())
+      .bucket(options.container)
+      .file(options.remote)
+      .createReadStream())
       .catchThrow(BaseCloudClient.providerErrorTypes.NotFound, new NotFound(`Object '${options.remote}' not found`));
   }
 
@@ -146,7 +216,7 @@ class GcpClient extends BaseCloudClient {
         container: container,
         remote: file
       })
-      .then((data) => JSON.parse(data))
+      .then(data => JSON.parse(data))
       .catchThrow(SyntaxError, new UnprocessableEntity(`Object '${file}' data unprocessable`));
   }
 
@@ -167,7 +237,7 @@ class GcpClient extends BaseCloudClient {
         resolve();
       }
 
-      var deleteOperation;
+      var deleteOperation; // eslint-disable-line no-var
       this.computeClient
         .snapshot(snapshotName)
         .delete()
@@ -194,16 +264,16 @@ class GcpClient extends BaseCloudClient {
       if (!options.projectId || !options.credentials) {
         throw new Error('GcpClient can not be instantiated as project id or credentials not found in backup provider config');
       }
-      assert.ok(options.credentials.type, `GcpClient can not be instantiated, missing 'type' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.project_id, `GcpClient can not be instantiated, missing 'project_id' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.private_key_id, `GcpClient can not be instantiated, missing 'private_key_id' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.private_key, `GcpClient can not be instantiated, missing 'private_key' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.client_email, `GcpClient can not be instantiated, missing 'client_email' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.client_id, `GcpClient can not be instantiated, missing 'client_id' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.auth_uri, `GcpClient can not be instantiated, missing 'auth_uri' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.token_uri, `GcpClient can not be instantiated, missing 'token_uri' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.auth_provider_x509_cert_url, `GcpClient can not be instantiated, missing 'auth_provider_x509_cert_url' property in credentials object in backup provider config`);
-      assert.ok(options.credentials.client_x509_cert_url, `GcpClient can not be instantiated, missing 'client_x509_cert_url' property in credentials object in backup provider config`);
+      assert.ok(options.credentials.type, 'GcpClient can not be instantiated, missing \'type\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.project_id, 'GcpClient can not be instantiated, missing \'project_id\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.private_key_id, 'GcpClient can not be instantiated, missing \'private_key_id\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.private_key, 'GcpClient can not be instantiated, missing \'private_key\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.client_email, 'GcpClient can not be instantiated, missing \'client_email\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.client_id, 'GcpClient can not be instantiated, missing \'client_id\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.auth_uri, 'GcpClient can not be instantiated, missing \'auth_uri\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.token_uri, 'GcpClient can not be instantiated, missing \'token_uri\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.auth_provider_x509_cert_url, 'GcpClient can not be instantiated, missing \'auth_provider_x509_cert_url\' property in credentials object in backup provider config');
+      assert.ok(options.credentials.client_x509_cert_url, 'GcpClient can not be instantiated, missing \'client_x509_cert_url\' property in credentials object in backup provider config');
     }
     return true;
   }
@@ -216,7 +286,7 @@ class GcpClient extends BaseCloudClient {
   }
 
   static createComputeClient(options) {
-    return GcpCompute({
+    return new GcpCompute({
       projectId: options.projectId,
       credentials: options.credentials
     });

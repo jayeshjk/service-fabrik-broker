@@ -2,46 +2,73 @@
 
 const _ = require('lodash');
 const Promise = require('bluebird');
-var moment = require('moment-timezone');
+const assert = require('assert');
+var moment = require('moment-timezone'); // eslint-disable-line no-var
 const catalog = require('../common/models/catalog');
 const errors = require('../common/errors');
 const logger = require('../common/logger');
 const config = require('../common/config');
 const NetworkSegmentIndex = require('../data-access-layer/bosh/NetworkSegmentIndex');
 const backupStore = require('../data-access-layer/iaas').backupStore;
+const cf = require('../data-access-layer/cf');
 const FabrikBaseController = require('./FabrikBaseController');
 const utils = require('../common/utils');
-const fabrik = require('../broker/lib/fabrik');
+const dbManager = require('../data-access-layer/db/DBManager');
+const OobBackupManager = require('../data-access-layer/oob-manager/OobBackupManager');
 const bosh = require('../data-access-layer/bosh');
 const ScheduleManager = require('../jobs');
 const BackupReportManager = require('../reports');
 const CONST = require('../common/constants');
 const maintenanceManager = require('../maintenance').maintenanceManager;
-const Conflict = errors.Conflict;
-const Forbidden = errors.Forbidden;
+const serviceBrokerClient = require('../common/utils/ServiceBrokerClient');
+const eventmesh = require('../data-access-layer/eventmesh');
+const DirectorService = require('../operators/bosh-operator/DirectorService');
 const BadRequest = errors.BadRequest;
+const Repository = require('../common/db').Repository;
 
 class ServiceFabrikAdminController extends FabrikBaseController {
   constructor() {
     super();
+    this.cloudController = cf.cloudController;
+    this.backupStore = backupStore;
+  }
+
+  getInstanceId(deploymentName) {
+    return _.nth(DirectorService.parseDeploymentName(deploymentName), 2);
   }
 
   updateDeployment(req, res) {
-    const self = this;
     const redirect_uri = _.get(req.query, 'redirect_uri', '/admin/deployments/outdated');
     const allowForbiddenManifestChanges = (req.body.forbidden_changes === undefined) ? true :
       JSON.parse(req.body.forbidden_changes);
     const deploymentName = req.params.name;
+    const instanceId = utils.parseServiceInstanceIdFromDeployment(deploymentName);
     const runImmediately = (req.body.run_immediately === 'true' ? true : false);
+    let resourceDetails;
+    let plan;
+    let context;
 
     function updateDeployment() {
-      return self.fabrik
-        .createOperation('update', {
-          deployment: deploymentName,
-          username: req.user.name,
-          arguments: req.body,
-          runImmediately: runImmediately
-        }).invoke()
+      return serviceBrokerClient
+        .updateServiceInstance({
+          instance_id: instanceId,
+          context: context,
+          service_id: plan.service.id,
+          plan_id: plan.id,
+          previous_values: {
+            service_id: plan.service.id,
+            plan_id: plan.id,
+            organization_id: context.organization_id,
+            space_id: context.space_guid
+          },
+          parameters: {
+            _runImmediately: runImmediately || false,
+            'service-fabrik-operation': true,
+            // Adding this key to make every patch call unique
+            // inorder to make interoperator react on spec change
+            'service-fabrik-operation-timestamp': new Date(Date.now()).toISOString()
+          }
+        })
         .then(body => {
           res.format({
             html: () => res
@@ -52,93 +79,58 @@ class ServiceFabrikAdminController extends FabrikBaseController {
           });
         });
     }
-    logger.info(`Forbidden Manifest flag set to ${allowForbiddenManifestChanges}`);
-    if (allowForbiddenManifestChanges === false) {
-      const instanceId = this.parseServiceInstanceIdFromDeployment(deploymentName);
-      return this
-        .getServicePlanIdForInstanceId(instanceId)
-        .then(planId => this.getOutdatedDiff(deploymentName, catalog.getPlan(planId)))
-        .then(diff => utils.hasChangesInForbiddenSections(diff))
-        .tap(() => logger.info(`Doing update for ${deploymentName} as there is no forbidden changes in manifest`))
-        .then(() => updateDeployment());
-    } else {
-      logger.info(`Doing update for ${deploymentName} even if forbidden changes exist in manifest`);
-      return updateDeployment();
-    }
+
+    return Promise.try(() => {
+      logger.info(`Forbidden Manifest flag set to ${allowForbiddenManifestChanges}`);
+      /* TODO: Conditional statement to fetch resource options below is needed to be backwards compatible 
+       as appliedOptions was added afterwards. Should be removed once all the older resources are updated. */
+      return eventmesh.apiServerClient.getResource({
+        resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT,
+        resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR,
+        resourceId: instanceId
+      })
+        .catch(errors.NotFound, () => undefined)
+        .then(resource => _.get(resource, 'status.appliedOptions') ? _.get(resource, 'status.appliedOptions') : _.get(resource, 'spec.options'))
+        .then(resource => {
+          resourceDetails = resource;
+          if (resourceDetails === undefined) {
+            throw new errors.NotFound(`Resource details of service instance ${instanceId} not found in api server.`);
+          } else {
+            const planId = _.get(resourceDetails, 'plan_id');
+            plan = catalog.getPlan(planId);
+            context = _.get(resourceDetails, 'context');
+            if (allowForbiddenManifestChanges === false) {
+              const tenantInfo = _.pick(resourceDetails, ['context']);
+              return this
+                .getOutdatedDiff({
+                  instance_id: instanceId,
+                  deployment_name: deploymentName
+                }, tenantInfo, plan)
+                .then(diff => utils.hasChangesInForbiddenSections(diff))
+                .tap(() => logger.info(`Doing update for ${deploymentName} as there is no forbidden changes in manifest`))
+                .then(() => updateDeployment());
+            } else {
+              logger.info(`Doing update for ${deploymentName} even if forbidden changes exist in manifest`);
+              return updateDeployment();
+            }
+          }
+        });
+    });
   }
 
-  updateOutdatedDeployments(req, res) {
-    const self = this;
-
-    function updateDeployment(deployment) {
-      return Promise
-        .try(() => {
-          utils.hasChangesInForbiddenSections(deployment.diff);
-        })
-        .then(() => self.fabrik
-          .createOperation('update', {
-            deployment: deployment.name,
-            username: req.user.name,
-            arguments: req.body
-          })
-          .invoke()
-        )
-        .then(result => ({
-          deployment: deployment.name,
-          guid: result.guid
-        }))
-        .catch(Forbidden, Conflict, err => ({
-          deployment: deployment.name,
-          error: _.pick(err, 'status', 'message')
-        }));
-    }
-
-    return this
-      .findOutdatedDeployments()
-      .map(updateDeployment)
-      .then(body => res
-        .status(202)
-        .send(body)
-      );
-  }
-
-  parseServiceInstanceIdFromDeployment(deploymentName) {
-    const deploymentNameArray = utils.deploymentNameRegExp().exec(deploymentName);
-    if (deploymentNameArray !== undefined && deploymentNameArray.length === 4) {
-      return deploymentNameArray[3];
-    }
-    return deploymentName;
-  }
-
-  getServicePlanIdForInstanceId(instanceId) {
-    logger.debug(`Fetching service plan id for instance id :  ${instanceId}`);
-    return this.cloudController
-      .findServicePlanByInstanceId(instanceId)
-      .then(body => body.entity.unique_id)
-      .catch(errors.ServiceInstanceNotFound, () => undefined);
-  }
-
-  getOutdatedDiff(deploymentName, plan) {
+  getOutdatedDiff(instanceDetails, tenantInfo, plan) {
+    const deploymentName = instanceDetails.deployment_name;
     logger.debug(`Getting outdated diff for  :  ${deploymentName}`);
-    return this.fabrik
-      .createManager(plan)
-      .then((directorManager) => this.cloudController.getOrgAndSpaceGuid(this.getInstanceId(deploymentName))
-        .then(opts => {
-          const context = {
-            platform: CONST.PLATFORM.CF,
-            organization_guid: opts.organization_guid,
-            space_guid: opts.space_guid
-          };
-          opts.context = context;
-          return directorManager
-            .diffManifest(deploymentName, opts)
-            .tap(result => logger.debug(`Diff of manifest for ${deploymentName} is ${result.diff}`))
-            .then(result => result.diff);
-        })
-      );
+    return DirectorService.createInstance(instanceDetails.instance_id, {
+      plan_id: plan.id,
+      context: tenantInfo.context
+    })
+      .then(directorInstance => directorInstance.diffManifest(deploymentName, tenantInfo))
+      .tap(result => logger.debug(`Diff of manifest for ${deploymentName} is ${result.diff}`))
+      .then(result => result.diff);
   }
 
-  getDeployments(req, res, onlySummary) {
+  getDeployments(req, res, onlySummary, fetchFromApiServer) {
     function assignOrgAndSpace(deployments, organizations, spaces) {
       spaces = _
         .chain(spaces)
@@ -160,9 +152,9 @@ class ServiceFabrikAdminController extends FabrikBaseController {
         .value();
       _.each(deployments, deployment => {
         if (_.isObject(deployment.metadata)) {
-          deployment.entity.guid = deployment.metadata.guid;
-          deployment.space = spaces[deployment.entity.space_guid];
-          deployment.organization = organizations[deployment.space.organization_guid];
+          deployment.entity.guid = _.get(deployment, 'metadata.guid');
+          deployment.space = spaces[_.get(deployment, 'entity.space_guid')];
+          deployment.organization = organizations[_.get(deployment, 'space.organization_guid')];
         }
       });
       return deployments;
@@ -170,15 +162,15 @@ class ServiceFabrikAdminController extends FabrikBaseController {
 
     return Promise
       .all([
-        this.findAllDeployments(),
+        this.findAllDeployments(fetchFromApiServer),
         this.cloudController.getOrganizations(),
         this.cloudController.getSpaces()
       ])
       .spread(assignOrgAndSpace)
       .map(deployment => {
-        if (deployment.manager) {
-          const networkSegmentIndex = deployment.manager.getNetworkSegmentIndex(deployment.name);
-          const plan = deployment.manager.plan;
+        if (deployment.directorService) {
+          const networkSegmentIndex = deployment.directorService.getNetworkSegmentIndex(deployment.name);
+          const plan = deployment.directorService.plan;
           const service = _.omit(plan.service, 'plans');
           deployment = _
             .chain(deployment)
@@ -214,7 +206,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   getDeploymentsSummary(req, res) {
-    this.getDeployments(req, res, true);
+    this.getDeployments(req, res, true, true);
   }
 
   getDeploymentDirectorConfig(req, res) {
@@ -229,30 +221,34 @@ class ServiceFabrikAdminController extends FabrikBaseController {
 
   getDeployment(req, res) {
     const deploymentName = req.params.name;
-    this.createManager(req.query.plan_id)
-      .then(manager => this.cloudController.getOrgAndSpaceGuid(this.getInstanceId(deploymentName))
-        .then(opts => {
-          const context = {
-            platform: CONST.PLATFORM.CF,
-            organization_guid: opts.organization_guid,
-            space_guid: opts.space_guid
-          };
-          opts.context = context;
-          return Promise
-            .all([
-              this.director.getDeploymentVmsVitals(deploymentName),
-              this.director.getTasks({
-                deployment: deploymentName
-              }),
-              manager.diffManifest(deploymentName, opts).then(utils.unifyDiffResult)
-            ])
-            .spread((vms, tasks, diff) => ({
-              name: deploymentName,
-              diff: diff,
-              tasks: _.filter(tasks, task => !_.startsWith(task.description, 'snapshot')),
-              vms: _.filter(vms, vm => !_.isNil(vm.vitals))
-            }));
+    const plan = catalog.getPlan(req.query.plan_id);
+    Promise.try(() => DirectorService.createInstance(this.getInstanceId(deploymentName), {
+      plan_id: plan.id
+    }))
+      .then(directorService =>
+        eventmesh.apiServerClient.getPlatformContext({
+          resourceGroup: plan.resourceGroup,
+          resourceType: plan.resourceType,
+          resourceId: this.getInstanceId(deploymentName)
         })
+          .then(context => {
+            const opts = {};
+            opts.context = context;
+            return Promise
+              .all([
+                this.director.getDeploymentVmsVitals(deploymentName),
+                this.director.getTasks({
+                  deployment: deploymentName
+                }),
+                directorService.diffManifest(deploymentName, opts).then(utils.unifyDiffResult)
+              ])
+              .spread((vms, tasks, diff) => ({
+                name: deploymentName,
+                diff: diff,
+                tasks: _.filter(tasks, task => !_.startsWith(task.description, 'snapshot')),
+                vms: _.filter(vms, vm => !_.isNil(vm.vitals))
+              }));
+          })
       )
       .then(locals => {
         res.format({
@@ -271,7 +267,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
       return _
         .chain(deployment)
         .pick('name', 'releases', 'stemcell')
-        .set('diff', utils.unifyDiffResult(deployment))
+        .set('diff', utils.unifyDiffResult(deployment, true))
         .set('instance', _
           .chain(deployment.entity)
           .pick('name', 'last_operation', 'space_guid', 'service_plan_id', 'service_plan_guid', 'dashboard_url')
@@ -284,8 +280,11 @@ class ServiceFabrikAdminController extends FabrikBaseController {
     return this
       .findOutdatedDeployments()
       .then(deployments => {
+        const mappedDeployments = _.map(deployments, mapDeployment);
         const locals = {
-          deployments: _.map(deployments, mapDeployment)
+          deployments: _.filter(mappedDeployments, deployment => {
+            return !_.isEmpty(deployment.diff);
+          })
         };
         res.format({
           html: () => res
@@ -323,11 +322,17 @@ class ServiceFabrikAdminController extends FabrikBaseController {
       });
   }
 
-  findAllDeployments() {
+  findAllDeployments(fetchFromApiServer) {
     return Promise
       .all([
         this.getServiceFabrikDeployments(),
-        this.getServiceInstancesForServiceBroker(this.serviceBrokerName)
+        Promise.try(() => {
+          if (fetchFromApiServer) {
+            return this.getServiceInstancesFromApiServer();
+          } else {
+            return this.getServiceInstancesForServiceBroker(this.serviceBrokerName);
+          }
+        })
       ])
       .spread((deployments, instances) => _
         .chain(_.keyBy(deployments, 'guid'))
@@ -346,29 +351,24 @@ class ServiceFabrikAdminController extends FabrikBaseController {
           logger.warn(`Found service instance '${deployment.entity.name} [${deployment.metadata.guid}]' without deployment`);
           return false;
         }
-        if (!deployment.manager) {
+        if (!deployment.directorService) {
           logger.warn(`Found deployment '${deployment.name}' without service instance`);
           return false;
         }
-        return this.cloudController.getOrgAndSpaceGuid(this.getInstanceId(deployment.name))
-          .then(opts => {
-            const context = {
-              platform: CONST.PLATFORM.CF,
-              organization_guid: opts.organization_guid,
-              space_guid: opts.space_guid
-            };
-            opts.context = context;
-            return deployment.manager
-              .diffManifest(deployment.name, opts)
-              .then(result => _
-                .chain(deployment)
-                .assign(_.pick(result, 'diff', 'manifest'))
-                .get('diff')
-                .size()
-                .gt(0)
-                .value()
-              );
-          });
+        const opts = {};
+        opts.context = {
+          platform: 'cloudfoundry'
+        };
+        return deployment.directorService
+          .diffManifest(deployment.name, opts)
+          .then(result => _
+            .chain(deployment)
+            .assign(_.pick(result, 'diff', 'manifest'))
+            .get('diff')
+            .size()
+            .gt(0)
+            .value()
+          );
       })
       .tap(deployments =>
         logger.info('Found outdated deployments', _.map(deployments, 'name'))
@@ -376,10 +376,9 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   getServiceFabrikDeployments() {
-    const DirectorManager = this.fabrik.DirectorManager;
 
     function extractGuidFromName(deployment) {
-      return (deployment.guid = _.nth(DirectorManager.parseDeploymentName(deployment.name), 2));
+      return (deployment.guid = _.nth(DirectorService.parseDeploymentName(deployment.name), 2));
     }
 
     return this.director
@@ -406,15 +405,69 @@ class ServiceFabrikAdminController extends FabrikBaseController {
           .getServiceInstances(`service_plan_guid IN ${guids}`)
           .map(instance => {
             const plan = getPlanByGuid(plans, instance.entity.service_plan_guid);
-            return this
-              .createManager(plan.id)
-              .then(manager => _
+            return Promise.try(() => DirectorService.createInstance(_.get(instance, 'metadata.guid'), {
+              plan_id: plan.id,
+              context: {
+                platform: CONST.PLATFORM.CF
+              }
+            }))
+              .then(service => _
                 .chain(instance)
-                .set('manager', manager)
+                .set('directorService', service)
                 .set('entity.service_plan_id', plan.id)
                 .value()
               );
           });
+      });
+  }
+
+  getServiceInstancesFromApiServer() {
+    function filterFaultyResources(director) {
+      if (!_.get(director, 'spec.options.context.space_guid') 
+      || !_.get(director, 'spec.options.context.instance_name')
+      || !_.get(director, 'spec.options.plan_id')) {
+        logger.info(`Faulty director resource found in deployment summary: ${_.get(director, 'metadata.name')}`);
+        return false;
+      }
+      return true;
+    }
+    return eventmesh.apiServerClient.getResourceListByState({
+      resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT,
+      resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR,
+      stateList: [CONST.APISERVER.RESOURCE_STATE.SUCCEEDED]
+    })
+      .then(directors => {
+        directors = _
+          .chain(directors)
+          .filter(filterFaultyResources)
+          .map(director => {
+            const instance_guid = _.get(director, 'metadata.name');
+            const space_guid = _.get(director, 'spec.options.context.space_guid');
+            const instance_name = _.get(director, 'spec.options.context.instance_name');
+            return _
+              .chain(director)
+              .set('metadata.guid', instance_guid)
+              .set('entity.space_guid', space_guid)
+              .set('entity.name', instance_name)
+              .value();
+          })
+          .value();
+        return directors;
+      })
+      .map(director => {
+        const plan = catalog.getPlan(director.spec.options.plan_id);
+        return Promise.try(() => DirectorService.createInstance(_.get(director, 'metadata.guid'), {
+          plan_id: plan.id,
+          context: {
+            platform: CONST.PLATFORM.CF
+          }
+        }))
+          .then(service => _
+            .chain(director)
+            .set('directorService', service)
+            .set('entity.service_plan_id', plan.id)
+            .value()
+          );
       });
   }
 
@@ -441,17 +494,16 @@ class ServiceFabrikAdminController extends FabrikBaseController {
         });
       })
       .catch(err => {
-        logger.error('Error occurred while fetching list of Backup List file info');
-        logger.error(err);
+        logger.error('Error occurred while fetching list of Backup List file info', err);
         throw err;
       })
       .catchThrow(RangeError, new BadRequest('Parameter \'before\' is not a valid Date'));
   }
 
   provisionDataBase(req, res) {
-    return this.fabrik.dbManager
+    return dbManager
       .createOrUpdateDbDeployment(true)
-      .then(() => res.status(202).send(this.fabrik.dbManager.getState()))
+      .then(() => res.status(202).send(dbManager.getState()))
       .catch(err => {
         logger.error('Error occurred while provisioning service-fabrik db. More info:', err);
         throw err;
@@ -459,9 +511,9 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   updateDatabaseDeployment(req, res) {
-    return this.fabrik.dbManager
+    return dbManager
       .createOrUpdateDbDeployment(false)
-      .then(() => res.status(202).send(this.fabrik.dbManager.getState()))
+      .then(() => res.status(202).send(dbManager.getState()))
       .catch(err => {
         logger.error('Error occurred while provisioning service-fabrik db. More info:', err);
         throw err;
@@ -469,7 +521,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   getDatabaseInfo(req, res) {
-    return res.status(200).send(this.fabrik.dbManager.getState());
+    return res.status(200).send(dbManager.getState());
   }
 
   startOobBackup(req, res) {
@@ -479,7 +531,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
       arguments: _.omit(req.body, 'bosh_director')
     };
     logger.info(`Starting OOB backup for: ${opts.deploymentName}`);
-    const oobBackupManager = fabrik.oobBackupManager.getInstance(req.body.bosh_director);
+    const oobBackupManager = OobBackupManager.getInstance(req.body.bosh_director);
     let body;
     return oobBackupManager
       .startBackup(opts)
@@ -494,7 +546,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   getOobBackup(req, res) {
-    const oobBackupManager = fabrik.oobBackupManager.getInstance(req.query.bosh_director);
+    const oobBackupManager = OobBackupManager.getInstance(req.query.bosh_director);
     return oobBackupManager
       .getBackup(req.params.name, req.query.backup_guid)
       .map(data => _.omit(data, 'secret', 'agent_ip', 'logs', 'container'))
@@ -516,7 +568,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
     if (_.isEmpty(options.agent_ip)) {
       throw new errors.BadRequest('Invalid token input');
     }
-    const oobBackupManager = fabrik.oobBackupManager.getInstance(req.query.bosh_director);
+    const oobBackupManager = OobBackupManager.getInstance(req.query.bosh_director);
     return oobBackupManager
       .getLastBackupStatus(options)
       .then(result => {
@@ -541,7 +593,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
         }
 
         logger.info(`Starting OOB restore for: ${opts.deploymentName}`);
-        const oobBackupManager = fabrik.oobBackupManager.getInstance(req.body.bosh_director);
+        const oobBackupManager = OobBackupManager.getInstance(req.body.bosh_director);
         let body;
         return oobBackupManager
           .startRestore(opts)
@@ -565,7 +617,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
     if (_.isEmpty(options.agent_ip)) {
       throw new errors.BadRequest('Invalid token input');
     }
-    const oobBackupManager = fabrik.oobBackupManager.getInstance(req.query.bosh_director);
+    const oobBackupManager = OobBackupManager.getInstance(req.query.bosh_director);
     return oobBackupManager
       .getLastRestoreStatus(options)
       .then(result => {
@@ -575,7 +627,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
   }
 
   getOobRestore(req, res) {
-    const oobBackupManager = fabrik.oobBackupManager.getInstance(req.query.bosh_director);
+    const oobBackupManager = OobBackupManager.getInstance(req.query.bosh_director);
     return oobBackupManager
       .getRestore(req.params.name)
       .then(restoreInfo => {
@@ -594,10 +646,10 @@ class ServiceFabrikAdminController extends FabrikBaseController {
     const boshDirectorName = req.body.bosh_director;
     const boshDirector = bosh.director;
     return boshDirector.getAgentPropertiesFromManifest(req.params.name)
-      .then((deploymentAgentProps) => {
+      .then(deploymentAgentProps => {
         const deploymentAgentContainer = deploymentAgentProps.provider.container;
         if (_.isEmpty(deploymentAgentContainer)) {
-          /*if the deployment is deleted, there won't be any clue where the backup was stored by agent.
+          /* if the deployment is deleted, there won't be any clue where the backup was stored by agent.
           This case is unlike service instance based backup where we had service id ,
           from that we can figure out the container/bucket name.
           But here we don't have that info. that's why container/bucket is required.*/
@@ -613,11 +665,11 @@ class ServiceFabrikAdminController extends FabrikBaseController {
           .value();
 
         return ScheduleManager.schedule(
-            req.params.name,
-            CONST.JOB.SCHEDULED_OOB_DEPLOYMENT_BACKUP,
-            req.body.repeatInterval,
-            data,
-            req.user)
+          req.params.name,
+          CONST.JOB.SCHEDULED_OOB_DEPLOYMENT_BACKUP,
+          req.body.repeatInterval,
+          data,
+          req.user)
           .then(body => res
             .status(201)
             .send(body));
@@ -660,7 +712,7 @@ class ServiceFabrikAdminController extends FabrikBaseController {
         .send(body));
   }
 
-  //Method for getting backup instance ids
+  // Method for getting backup instance ids
   getScheduledBackupInstances(req, res) {
     if (req.query.start_time && !moment(req.query.start_time, CONST.REPORT_BACKUP.INPUT_DATE_FORMAT, true).isValid()) {
       throw new BadRequest(`Invalid start date, required format ${CONST.REPORT_BACKUP.INPUT_DATE_FORMAT}`);
@@ -744,6 +796,88 @@ class ServiceFabrikAdminController extends FabrikBaseController {
       .then(body => res
         .status(200)
         .send(body));
+  }
+
+  // Method for getting  instance ids with updates scheduled
+  getScheduledUpdateInstances(req, res) {
+    logger.info('Getting scheduled update instance list...');
+    return this.getInstancesWithUpdateScheduled()
+      .then(body => res
+        .status(200)
+        .send(body));
+  }
+
+  runNow(req, res) {
+    logger.info(`Running job name: ${req.body.job_name}, job type ${req.params.job_type}`);
+    const instance_guid = _.get(req.body, 'instance_guid');
+    const jobData = instance_guid == undefined ? {} : {
+      instance_guid: instance_guid
+    };
+    const interval = utils.getCronAfterXMinuteFromNow(1);
+    return ScheduleManager
+      .runAt(req.body.job_name, req.params.job_type, interval, jobData, req.user)
+      .then(body => res.status(CONST.HTTP_STATUS_CODE.CREATED).send(body));
+  }
+
+  createUpdateConfig(req, res) {
+    assert.ok(req.query.key, 'Key parameter must be defined for the Create Config request');
+    assert.ok(req.query.value, 'Value parameter must be defined for the Create Config request');
+    logger.info(`Creating config with key: ${req.query.key} and value: ${req.query.value}`);
+    const config = {
+      key: req.query.key,
+      value: req.query.value
+    };
+    const body = {
+      message: `Created/Updated ${req.query.key} with value ${req.query.value}`
+    };
+    return eventmesh.apiServerClient.createUpdateConfigMapResource(CONST.CONFIG.RESOURCE_NAME, config)
+      .then(() => {
+        return res.status(201).send(body);
+      });
+  }
+
+  getConfig(req, res) {
+    assert.ok(req.params.name, 'Key parameter must be defined for the Get Config request');
+    return eventmesh.apiServerClient.getConfigMap(CONST.CONFIG.RESOURCE_NAME, req.params.name)
+      .tap(value => logger.debug(`Returning config with key: ${req.params.name} and value: ${value}`))
+      .then(value => {
+        const body = {
+          value: value,
+          key: req.params.name
+        };
+        return res.status(200).send(body);
+      });
+  }
+
+  getInstancesWithUpdateScheduled() {
+    function getInstancesWithUpdateScheduled(instanceList, offset, modelName, searchCriteria, paginateOpts) {
+      if (offset < 0) {
+        return Promise.resolve();
+      }
+      _.chain(paginateOpts)
+        .set('offset', offset)
+        .value();
+      return Repository.search(modelName, searchCriteria, paginateOpts)
+        .then(result => {
+          instanceList.push.apply(instanceList, _.map(result.list, 'data'));
+          return getInstancesWithUpdateScheduled(instanceList, result.nextOffset, modelName, searchCriteria, paginateOpts);
+        });
+    }
+    const criteria = {
+      searchBy: {
+        type: CONST.JOB.SERVICE_INSTANCE_UPDATE
+      },
+      projection: {
+        'data.instance_id': 1
+      }
+    };
+    const paginateOpts = {
+      records: config.mongodb.record_max_fetch_count,
+      offset: 0
+    };
+    const result = [];
+    return getInstancesWithUpdateScheduled(result, 0, CONST.DB_MODEL.JOB, criteria, paginateOpts)
+      .then(() => result);
   }
 }
 

@@ -9,6 +9,7 @@ const morgan = require('morgan');
 const bodyParser = require('body-parser');
 const config = require('./config');
 const logger = require('./logger');
+const helmet = require('helmet'); // Helmet includes HSTS as a built-in header
 const middleware = require('./middleware');
 const connectTimeout = require('connect-timeout');
 
@@ -22,13 +23,13 @@ class ExpressApp {
       .set('_', _)
       .set('yaml', yaml)
       .commit();
-
     app.set('env', process.env.NODE_ENV || 'development');
     app.set('port', cfg.port);
     app.set('type', type);
     app.set('title', cfg.title || `Service Fabrik Broker (${type})`);
     if (cfg.ssl) {
       app.set('ssl', cfg.ssl);
+      app.use(helmet());
     }
     app.disable('etag');
     app.set('views', path.join(__dirname, 'views'));

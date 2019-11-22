@@ -10,25 +10,34 @@ const errors = require('../common/errors');
 const logger = require('../common/logger');
 const catalog = require('../common/models').catalog;
 const utils = require('../common/utils');
+const CONST = require('../common/constants');
+const eventmesh = require('../data-access-layer/eventmesh');
+const cf = require('../data-access-layer/cf');
+const DirectorService = require('../operators/bosh-operator/DirectorService');
+const DockerService = require('../operators/docker-operator/DockerService');
+const VirtualHostService = require('../operators/virtualhost-operator/VirtualHostService');
 const FabrikBaseController = require('./FabrikBaseController');
 const Forbidden = errors.Forbidden;
 const ContinueWithNext = errors.ContinueWithNext;
+const assert = require('assert');
 
 Promise.promisifyAll(crypto, Session.prototype);
 
 class DashboardController extends FabrikBaseController {
   constructor() {
     super();
+    this.cloudController = cf.cloudController;
+    this.uaa = cf.uaa;
   }
 
   show(req, res) {
-    const managerType = req.instance.plan.manager.name;
-    return req.instance
+    const managerType = req.service.plan.manager.name;
+    return req.service
       .getInfo()
       .then(info => {
         let additional_info = {};
-        if (req.instance.plan.manager.settings.dashboard_template) {
-          additional_info = yaml.safeLoad(_.template(Buffer.from(req.instance.plan.manager.settings.dashboard_template, 'base64'))(info));
+        if (req.service.plan.manager.settings.dashboard_template) {
+          additional_info = yaml.safeLoad(_.template(Buffer.from(req.service.plan.manager.settings.dashboard_template, 'base64'))(info));
         }
         info = _.assign({
           userId: req.session.user_id,
@@ -65,7 +74,7 @@ class DashboardController extends FabrikBaseController {
         state: req.session.state
       }))
       .tap(query => logger.info('Redirecting to authorization server with query parameters:', query))
-      .then(query => res.redirect(this.uaa.authorizationUrl(query)));
+      .then(query => res.redirect(this.uaa.authorizationUrl(query, req.session.login_hint)));
   }
 
   handleAuthorizationResponse(req, res) {
@@ -105,7 +114,7 @@ class DashboardController extends FabrikBaseController {
   validateSession(req, res) {
     /* jshint unused:false */
     logger.info(`Validating session '${req.session.id}'`);
-    if (!req.session.service_id || req.session.service_id === req.params.service_id) {
+    if ((!req.session.service_id || req.session.service_id === req.params.service_id) || (!req.session.instance_type || req.session.instance_type === req.params.instance_type)) {
       throw new ContinueWithNext();
     }
     logger.info('Regenerating session...');
@@ -120,24 +129,75 @@ class DashboardController extends FabrikBaseController {
     const instance_id = req.params.instance_id;
     const service_id = req.params.service_id;
     const plan_id = req.params.plan_id;
-    logger.info(`Validating service '${service_id}' and plan '${plan_id}'`);
     const encodedOp = _.get(req, 'query.operation', undefined);
     const operation = encodedOp === undefined ? null : utils.decodeBase64(encodedOp);
     const context = _.get(req, 'body.context') || _.get(operation, 'context');
-    return this.fabrik
-      .createInstance(instance_id, service_id, plan_id, context)
-      .tap(instance => {
-        req.instance = instance;
-        req.manager = instance.manager;
+    logger.info(`Validating service '${service_id}' and plan '${plan_id}'`);
+    return this.cloudController.getPlanIdFromInstanceId(instance_id)
+      .then(current_plan_id => {
+        logger.info(`plan_id in Dashboard URL was ${plan_id} and actual plan_id is ${current_plan_id}`);
+        return createService(current_plan_id, instance_id, context);
+      })
+      .then(service => {
+        req.service = service;
       })
       .throw(new ContinueWithNext());
   }
 
+  validateServiceInstanceAndType(req, res) {
+    /* jshint unused:false */
+    const instance_id = req.params.instance_id;
+    const instance_type = req.params.instance_type;
+    /* TODO: Conditional statement to fetch resourceOptions below is needed to be backwards compatible 
+     as appliedOptions was added afterwards. Should be removed once all the older resources are updated. */
+    return this._getApiServerResource(instance_id, instance_type)
+      .then(resource => _.get(resource, 'status.appliedOptions') ? _.get(resource, 'status.appliedOptions') : _.get(resource, 'spec.options'))
+      .then(resourceOptions => {
+        const service_id = _.get(resourceOptions, 'service_id');
+        const plan_id = _.get(resourceOptions, 'plan_id');
+        const context = _.get(resourceOptions, 'context');
+        req.session.service_id = service_id;
+        req.session.plan_id = plan_id;
+        return createService(plan_id, instance_id, context);
+      })
+      .then(service => {
+        req.service = service;
+      })
+      .then(() => saveSession(req.session))
+      .throw(new ContinueWithNext());
+  }
+
+  _getApiServerResource(instance_id, instance_type) {
+    let resourceType;
+    switch (instance_type) {
+      case CONST.INSTANCE_TYPE.DIRECTOR:
+        resourceType = CONST.APISERVER.RESOURCE_TYPES.DIRECTOR;
+        break;
+      case CONST.INSTANCE_TYPE.DOCKER:
+        resourceType = CONST.APISERVER.RESOURCE_TYPES.DOCKER;
+        break;
+      case CONST.INSTANCE_TYPE.VIRTUAL_HOST:
+        resourceType = CONST.APISERVER.RESOURCE_TYPES.VIRTUALHOST;
+        break;
+      default:
+        throw new errors.NotFound(`Resource doesn't exist for instance type ${instance_type}`);
+    }
+    return eventmesh.apiServerClient.getResource({
+      resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT,
+      resourceType: resourceType,
+      resourceId: instance_id
+    });
+  }
+
   requireLogin(req, res) {
     logger.info(`Validating user '${req.session.user_id}' and access token`);
-    req.session.service_id = req.params.service_id;
-    req.session.plan_id = req.params.plan_id;
+    req.session.service_id = req.params.service_id || req.session.service_id;
+    req.session.plan_id = req.params.plan_id || req.session.plan_id;
     req.session.instance_id = req.params.instance_id;
+    req.session.instance_type = req.params.instance_type;
+    if (req.query.login_hint) {
+      req.session.login_hint = req.query.login_hint;
+    }
     const oldestAllowableLastSeen = Date.now() - config.external.session_expiry * 1000;
     if (req.session.user_id && req.session.access_token && req.session.last_seen > oldestAllowableLastSeen) {
       req.session.last_seen = Date.now();
@@ -214,7 +274,30 @@ function saveSession(session) {
 }
 
 function manageInstancePath(session) {
-  return `/manage/instances/${session.service_id}/${session.plan_id}/${session.instance_id}`;
+  return session.instance_type ? `/manage/dashboards/${session.instance_type}/instances/${session.instance_id}` : `/manage/instances/${session.service_id}/${session.plan_id}/${session.instance_id}`;
+}
+
+function createService(plan_id, instance_id, context) {
+  const plan = catalog.getPlan(plan_id);
+  const options = {
+    plan_id: plan_id,
+    context: context
+  };
+  switch (plan.manager.name) {
+    case CONST.INSTANCE_TYPE.DIRECTOR:
+      return DirectorService.createInstance(instance_id, options);
+    case CONST.INSTANCE_TYPE.DOCKER:
+      if (config.enable_swarm_manager) {
+        return DockerService.createInstance(instance_id, options);
+      } else {
+        assert.fail(plan.manager.name, [CONST.INSTANCE_TYPE.DIRECTOR, CONST.INSTANCE_TYPE.VIRTUAL_HOST], undefined, 'in');
+      }
+      break;
+    case CONST.INSTANCE_TYPE.VIRTUAL_HOST:
+      return VirtualHostService.createVirtualHostService(instance_id, options);
+    default:
+      assert.fail(plan.manager.name, [CONST.INSTANCE_TYPE.DIRECTOR, CONST.INSTANCE_TYPE.DOCKER, CONST.INSTANCE_TYPE.VIRTUAL_HOST], undefined, 'in');
+  }
 }
 
 module.exports = DashboardController;

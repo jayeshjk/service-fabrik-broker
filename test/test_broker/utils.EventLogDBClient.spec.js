@@ -4,7 +4,6 @@ const proxyquire = require('proxyquire');
 const pubsub = require('pubsub-js');
 const Repository = require('../../common/db').Repository;
 const CONST = require('../../common/constants');
-const jwt = require('../../broker/lib/jwt');
 
 describe('utils', function () {
   /* jshint expr:true */
@@ -19,10 +18,8 @@ describe('utils', function () {
     let subscribeStub, saveStub, processAppEventHandler, initializeHandler, shutDownHandler;
 
     before(function () {
-      subscribeStub = sinon.stub(pubsub, 'subscribe', (eventType, handler) => {
-        if (eventType === CONST.TOPIC.MONGO_OPERATIONAL) {
-          initializeHandler = handler;
-        } else if (eventType === CONST.TOPIC.APP_SHUTTING_DOWN) {
+      subscribeStub = sinon.stub(pubsub, 'subscribe').callsFake((eventType, handler) => {
+        if (eventType === CONST.TOPIC.APP_SHUTTING_DOWN) {
           shutDownHandler = handler;
         } else {
           processAppEventHandler = handler;
@@ -32,8 +29,8 @@ describe('utils', function () {
       saveStub = sinon.stub(Repository, 'save');
     });
     afterEach(function () {
-      subscribeStub.reset();
-      saveStub.reset();
+      subscribeStub.resetHistory();
+      saveStub.resetHistory();
     });
     after(function () {
       subscribeStub.restore();
@@ -44,31 +41,26 @@ describe('utils', function () {
       const eventLogDBClient = new EventLogDBClient({
         event_type: 'SF.BROKER_EVENT'
       });
-      initializeHandler();
       shutDownHandler();
-      expect(subscribeStub).to.be.calledThrice;
+      expect(subscribeStub).to.be.calledTwice;
       expect(eventLogDBClient.eventsToBeLoggedInDB.length).to.equal(2);
     });
     it('#initialize - gracefully handles when input with invalid options', function () {
       const eventLogDBClient = new EventLogDBClient();
-      initializeHandler();
-      expect(subscribeStub).to.be.calledTwice;
+      expect(subscribeStub).to.be.calledOnce;
       expect(eventLogDBClient.eventsToBeLoggedInDB.length).to.equal(2);
     });
     it('#initialize - subscribe only once to events', function () {
       const eventLogDBClient = new EventLogDBClient({
         event_type: 'SF.BROKER_EVENT'
       });
-      initializeHandler();
-      initializeHandler();
-      expect(subscribeStub).to.be.calledThrice;
+      expect(subscribeStub).to.be.calledTwice;
       expect(eventLogDBClient.eventsToBeLoggedInDB.length).to.equal(2);
     });
 
     describe('#logevent', function () {
       it('ignores invalid events', function () {
         const eventLogDBClient = new EventLogDBClient();
-        initializeHandler();
         eventLogDBClient.handleEvent('', {
           event: {}
         });
@@ -77,7 +69,6 @@ describe('utils', function () {
       });
       it('does not log events which are not configured', function () {
         const eventLogDBClient = new EventLogDBClient();
-        initializeHandler();
         const eventInfo = {
           host: '4c30f022-a041-4100-aa15-0c9979ca7938',
           eventName: 'CF.broker.0.service-fabrik.director.create_instance'
@@ -88,20 +79,7 @@ describe('utils', function () {
         expect(saveStub).not.to.be.called;
       });
       it('successfully logs event to DB', function () {
-        const operation = {
-          aud: 'https://management.core.windows.net/',
-          iss: 'https://sts.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/',
-          iat: 1462553269,
-          nbf: 1462553269,
-          exp: 1462557169,
-          appid: 'b9e6e07b-c43e-4731-85ca-9817892724cd',
-          appidacr: '1',
-          idp: 'https://sts.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/',
-          oid: '4e043f86-b33d-4c3b-8c56-5c75928a370e',
-          sub: '4e043f86-b33d-4c3b-8c56-5c75928a370e',
-          tid: '72f988bf-86f1-41af-91ab-2d7cd011db47',
-          ver: '1.0'
-        };
+
         const eventInfo = {
           host: '4c30f022-a041-4100-aa15-0c9979ca7938',
           eventName: 'CF.broker.0.service-fabrik.director.update_instance',
@@ -112,7 +90,6 @@ describe('utils', function () {
           time: new Date(),
           request: {
             instance_id: '46d34d39-83b1-4b2d-8260-50f2d66a0957',
-            operation: jwt.sign(operation, 'secret'),
             plan_id: 'a49cd221-e8c2-4f22-a2a6-366bf00b5c54',
             service_id: '6db542eb-8187-4afc-8a85-e08b4a3cc24e',
             user: {
@@ -127,8 +104,7 @@ describe('utils', function () {
         const eventLogDBClient = new EventLogDBClient({
           event_type: 'SF.BROKER_EVENT'
         });
-        initializeHandler();
-        expect(subscribeStub).to.be.calledThrice;
+        expect(subscribeStub).to.be.calledTwice;
         expect(eventLogDBClient.eventsToBeLoggedInDB.length).to.equal(2);
         processAppEventHandler('', {
           event: eventInfo
@@ -178,8 +154,7 @@ describe('utils', function () {
         const eventLogDBClient = new EventLogDBClient({
           event_type: 'SF.BROKER_EVENT'
         });
-        initializeHandler();
-        expect(subscribeStub).to.be.calledThrice;
+        expect(subscribeStub).to.be.calledTwice;
         expect(eventLogDBClient.eventsToBeLoggedInDB.length).to.equal(2);
         processAppEventHandler('', {
           event: eventInfo

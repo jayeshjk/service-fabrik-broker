@@ -2,9 +2,8 @@
 
 const _ = require('lodash');
 const Promise = require('bluebird');
-const lib = require('../../broker/lib');
 const FeatureNotSupportedByAnyAgent = require('../../common/errors').FeatureNotSupportedByAnyAgent;
-const Agent = lib.fabrik.Agent;
+const Agent = require('../../data-access-layer/service-agent');
 
 describe('fabrik', function () {
   describe('Agent', function () {

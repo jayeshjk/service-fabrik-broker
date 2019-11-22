@@ -5,7 +5,14 @@
 const path = require('path');
 const os = require('os');
 
-const log_path = path.join(__dirname, '../..', 'logs', `${process.env.NODE_ENV}.log`)
+let filePrefix = '';
+if(process && process.argv[1] && process.argv[1].indexOf('.js') !== -1){
+  const exeName = process.argv[1].substring(process.argv[1].lastIndexOf('/')+1, process.argv[1].indexOf('.js'));
+  if(exeName && exeName !== ''){
+    filePrefix = `${exeName}-`;
+  }
+}
+const log_path = path.join(__dirname, '../..', 'logs', `${filePrefix}${process.env.NODE_ENV}.log`)
 
 const broker_name = 'service-fabrik-broker';
 const ip = '10.0.2.2';
@@ -60,6 +67,13 @@ const cloudProviders = {
     storageAccessKey: 'xxxxxxxxxxxxxxxxxx',
     container: 'samplecontainer'
   },
+  ali: {
+    keyId: 'key-id',
+    container: 'sample-container',
+    endpoint: 'https://sample-endpoint',
+    region: 'region-name',
+    key: 'secret-key'
+  },
   gcp: {
     projectId: 'my-gcp-dev',
     credentials: {
@@ -78,53 +92,6 @@ const cloudProviders = {
   }
 };
 const cloudProvider = cloudProviders.openstack;
-
-const virtualHostCloudProviders = {
-  openstack: {
-    authUrl: 'https://myopenstackcloud.com:5000',
-    keystoneAuthVersion: 'v3',
-    domainName: 'MYDOMAIN',
-    tenantName: 'service-fabrik',
-    tenantId: 'xxxxxxxxxxxxxxxxxx',
-    region: 'eu-de-1',
-    username: 'service-fabrik-rabbitmq-backup-service-fabrik',
-    password: 'xxxxxxxxxxxxxxxxxx',
-    containerPrefix: 'cf.service-fabrik.myopenstack.com-service-fabrik'
-  },
-  amazon: {
-    region: 'eu-central-1',
-    keyId: 'xxxxxxxxxxxxxxxxxx',
-    key: 'xxxxxxxxxxxxxxxxxx',
-    containerPrefix: 'cf.service-fabrik.myaws.com-service-fabrik'
-  },
-  azure: {
-    subscription_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    resource_group: 'rg-abc',
-    client_id: 'ccccccccc-cccc-cccc-cccc-cccccccccccc',
-    client_secret: 'abc4356=',
-    tenant_id: 'tttttttt-tttt-tttt-tttt-tttttttttttt',
-    storageAccount: 'storageacc',
-    storageAccessKey: 'xxxxxxxxxxxxxxxxxx',
-    container: 'rabbitmqsamplecontainer'
-  },
-  gcp: {
-    projectId: 'my-gcp-dev',
-    credentials: {
-      "type": "service_account",
-      "project_id": "my-gcp-dev",
-      "private_key_id": "kkkkkkkk",
-      "private_key": "-----BEGIN PRIVATE KEY-----\nlllllllllllllllllllllll\n-----END PRIVATE KEY-----\n",
-      "client_email": "my-test-user@my-gcp-dev.iam.myaccounts.com",
-      "client_id": "000000000000000",
-      "auth_uri": "https://myaccounts.com/oauth2/auth",
-      "token_uri": "https://myaccounts.com/oauth2/token",
-      "auth_provider_x509_cert_url": "https://myaccounts.com/oauth2/v1/certs",
-      "client_x509_cert_url": "https://myaccounts.com/v1/metadata/x509/my-test-user%40my-gcp-dev.iam.myaccounts.com" 
-    },
-    container: 'samplecontainer'
-  }
-};
-const virtualHostCloudProvider = virtualHostCloudProviders.openstack;
 
 %>---
 defaults: &defaults
@@ -146,12 +113,16 @@ defaults: &defaults
   enable_circuit_breaker: true
   enable_swarm_manager: true
   enable_bosh_rate_limit: false # Global switch to enable/disable rate limiting against BOSH directors
+  enable_cross_organization_sharing: false
   feature:
     ServiceInstanceAutoUpdate: true #Switch to turn on / turn off schedule_update feature
     EnableSecurityGroupsOps: true
+    AllowInstanceSharing: true
   # this timeout is set to 175 secs by default because CF has a default timeout of 180 secs
   http_timeout: 175000
   deployment_action_timeout: 80000
+  # (milliseconds) this time out can be used any operation done on broker agent
+  agent_operation_timeout: 35000
   multi_az_enabled: false
   broker_drain_message: 'BROKER_DRAIN_INITIATED'
   ##############################
@@ -189,6 +160,8 @@ defaults: &defaults
   # APISERVER SETTINGS #
   ##############################
   apiserver:
+    # isServiceDefinitionAvailableOnApiserver: false
+    # enable_namespace: false
     ip: '10.244.14.252'
     port: 8443
     encryption:
@@ -200,12 +173,22 @@ defaults: &defaults
       "deployment.servicefabrik.io_v1alpha1_directors.yaml": <%=base64_template('crds/deployment.servicefabrik.io_v1alpha1_directors.yaml') %>
       "lock.servicefabrik.io_v1alpha1_deploymentlocks.yaml": <%= base64_template('crds/lock.servicefabrik.io_v1alpha1_deploymentlocks.yaml') %>
       "backup.servicefabrik.io_v1alpha1_defaultrestores.yaml": <%= base64_template('crds/backup.servicefabrik.io_v1alpha1_defaultrestores.yaml') %>
+      "backup.servicefabrik.io_v1alpha1_defaultboshrestores.yaml": <%= base64_template('crds/backup.servicefabrik.io_v1alpha1_defaultboshrestores.yaml') %>
       "bind.servicefabrik.io_v1alpha1_directorbinds.yaml": <%= base64_template('crds/bind.servicefabrik.io_v1alpha1_directorbinds.yaml') %>
       "bind.servicefabrik.io_v1alpha1_dockerbinds.yaml": <%= base64_template('crds/bind.servicefabrik.io_v1alpha1_dockerbinds.yaml') %>
       "backup.servicefabrik.io_v1alpha1_defaultbackups.yaml": <%= base64_template('crds/backup.servicefabrik.io_v1alpha1_defaultbackups.yaml') %>
       "deployment.servicefabrik.io_v1alpha1_dockers.yaml": <%= base64_template('crds/deployment.servicefabrik.io_v1alpha1_dockers.yaml') %>
       "deployment.servicefabrik.io_v1alpha1_virtualhosts.yaml": <%= base64_template('crds/deployment.servicefabrik.io_v1alpha1_virtualhosts.yaml') %>
       "bind.servicefabrik.io_v1alpha1_virtualhostbinds.yaml": <%= base64_template('crds/bind.servicefabrik.io_v1alpha1_virtualhostbinds.yaml') %>
+      "serviceflow.servicefabrik.io_v1alpha1_serialserviceflows.yaml": <%= base64_template('crds/serviceflow.servicefabrik.io_v1alpha1_serialserviceflows.yaml') %>
+      "serviceflow.servicefabrik.io_v1alpha1_tasks.yaml": <%= base64_template('crds/serviceflow.servicefabrik.io_v1alpha1_tasks.yaml') %>
+      "deployment.servicefabrik.io_v1alpha1_postgresqlmts.yaml": <%= base64_template('crds/deployment.servicefabrik.io_v1alpha1_postgresqlmts.yaml') %>
+      "bind.servicefabrik.io_v1alpha1_postgresqlmtbinds.yaml": <%= base64_template('crds/bind.servicefabrik.io_v1alpha1_postgresqlmtbinds.yaml') %>
+      "osb.servicefabrik.io_v1alpha1_sfserviceinstances.yaml": <%=base64_template('crds/osb.servicefabrik.io_v1alpha1_sfserviceinstances.yaml') %>
+      "osb.servicefabrik.io_v1alpha1_sfservicebindings.yaml": <%=base64_template('crds/osb.servicefabrik.io_v1alpha1_sfservicebindings.yaml') %>
+      "osb.servicefabrik.io_v1alpha1_sfservices.yaml": <%=base64_template('crds/osb.servicefabrik.io_v1alpha1_sfservices.yaml') %>
+      "osb.servicefabrik.io_v1alpha1_sfplans.yaml": <%=base64_template('crds/osb.servicefabrik.io_v1alpha1_sfplans.yaml') %>
+      "instance.servicefabrik.io_v1alpha1_sfevents.yaml": <%= base64_template('crds/instance.servicefabrik.io_v1alpha1_sfevents.yaml') %>
 
   ##############################
   # REPORT ENDPOINT SETTINGS #
@@ -221,18 +204,6 @@ defaults: &defaults
       key: <%= certificate('broker.key') %>
       cert: <%= certificate('broker.crt') %>
   
-
-  ####################
-  # ETCD SETTINGS #
-  ####################
-  etcd:
-    url:
-      - 'localhost:2379'
-    ssl:
-      ca: <%= certificate('etcd-ca.crt') %>
-      crt: <%= certificate('etcd.crt') %>
-      key: <%= certificate('etcd.key') %>
-
   hook:
     port: <%= hook.port %>
     ip: <%= hook.ip %>
@@ -333,6 +304,10 @@ defaults: &defaults
             - name : EventDetail
               retention_in_days: 90
         enabled: true
+      - name: 'Meter_Instance'
+        type: MeterInstance
+        interval: '*/2 * * * *'
+        enabled: true
 
   #######################
   # MONITORING SETTINGS #
@@ -380,6 +355,18 @@ defaults: &defaults
     serviceDomain: https://my-tenant-onboarding.com
     username: sb-service-client!t1
     password: quota_password
+  #####################
+  # METERING SETTINGS #
+  #####################
+  metering:
+    client_id: 'metering_client_id'
+    client_secret: 'metering_client_secret'
+    token_url: 'https://service-fabrik.authentication.domain.com'
+    metering_url: 'https://metering.cfapps.domain.com/dev'
+    region: "asia"
+    # This option is provided to set the maximum timeout after which 
+    # Error in sending a meter job is reported to riemann
+    error_threshold_hours: 1
   ###################
   # BACKUP SETTINGS #
   ###################
@@ -411,23 +398,6 @@ defaults: &defaults
       strictSSL: false
       container: <%= cloudProvider.containerPrefix %>-broker
 
-  #################################
-  # VIRTUAL HOST MANAGER SETTINGS #
-  #################################
-  virtual_host:
-    provider:
-      name: openstack
-      authUrl: <%= virtualHostCloudProvider.authUrl %>
-      keystoneAuthVersion: <%= virtualHostCloudProvider.keystoneAuthVersion %>
-      domainName: <%= virtualHostCloudProvider.domainName %>
-      projectDomainName: <%= virtualHostCloudProvider.domainName %>
-      tenantId: <%= virtualHostCloudProvider.tenantId %>
-      region: <%= virtualHostCloudProvider.region %>
-      username: <%= virtualHostCloudProvider.username %>
-      password: <%= virtualHostCloudProvider.password %>
-      strictSSL: false
-      container: <%= virtualHostCloudProvider.containerPrefix %>-rabbitmq
-
   #############################
   # CLOUD-CONTROLLER SETTINGS #
   #############################
@@ -435,6 +405,7 @@ defaults: &defaults
     url: https://api.bosh-lite.com
     username: admin
     password: admin
+    identity_provider: uaa
   
   ###################
   # DOCKER SETTINGS #
@@ -541,6 +512,17 @@ defaults: &defaults
       - lifecycle
       - credentials
       - multi_tenancy
+    postgresql: &agent_postgresql
+      version: '1'
+      hostname: <%= process.env.POSTGRESQL_AGENT_HOSTNAME || '~' %>
+      auth:
+        username: agent
+        password: secret
+      supported_features:
+      - state
+      - lifecycle
+      - credentials
+      - multi_tenancy
   ####################
   # SERVICES CATALOG #
   ####################
@@ -570,6 +552,7 @@ defaults: &defaults
     supported_platform:
     - k8s
     - cf
+    - sm
     actions: Blueprint
     backup_interval: '8 hours'
     pitr: true
@@ -580,6 +563,8 @@ defaults: &defaults
     - &blueprint_plan1
       id: '466c5078-df6e-427d-8fb2-c76af50c0f56'
       name: 'v1.0-dev'
+      sku_name: 'dev'
+      metered: false
       free: true
       manager:
         name: 'docker'
@@ -616,9 +601,24 @@ defaults: &defaults
         - 'Container Deployment'
         - '128 MB Memory'
         - '100 MB Disk'
+      templates: &docker_templates
+      - action: sources
+        type: gotemplate
+        contentEncoded: <%= base64_template('samples/templates/gotemplates/docker/sources.yaml')  %>
+      - action: status
+        type: gotemplate
+        contentEncoded: <%= base64_template('samples/templates/gotemplates/docker/status.yaml') %>
+      - action: provision
+        type: gotemplate
+        contentEncoded: <%= base64_template('samples/templates/gotemplates/docker/provision.yaml') %>
+      - action: bind
+        type: gotemplate
+        contentEncoded: <%= base64_template('samples/templates/gotemplates/docker/bind.yaml') %>
     - &blueprint_plan2
       id: '6a252f89-c974-4ef9-a4de-c49f300de39a'
       name: 'v1.0-dev-large'
+      sku_name: 'dev'
+      metered: false
       free: true
       manager:
         name: 'docker'
@@ -650,6 +650,7 @@ defaults: &defaults
         - 'Container Deployment'
         - '256 MB Memory'
         - '200 MB Disk'
+      templates: *docker_templates
     - &blueprint_plan7
       id: '61a8d1f7-6477-4eb7-a85d-57ac067e80c4'
       name: 'v1.0-container-large-deprecated'
@@ -685,13 +686,21 @@ defaults: &defaults
         - 'Container Deployment'
         - '256 MB Memory'
         - '200 MB Disk'
+      templates: *docker_templates
     ###########################
     # DEDICATED SERVICE PLANS #
     ###########################
     - &blueprint_plan3
       id: 'bc158c9a-7934-401e-94ab-057082a5073f'
       name: 'v1.0-xsmall'
+      sku_name: 'xsmall'
+      metered: true
       free: false
+      # Asynch operations which supports parallel synch operations
+      # e.g. bind and unbind (sync) supported during update and backup (async)
+      async_ops_supporting_parallel_sync_ops: &async_ops_supporting_parallel_sync_ops
+      - 'update'
+      - 'backup'
       actions: ReserveIps
       manager: &manager_plan3
         name: 'director'
@@ -731,6 +740,34 @@ defaults: &defaults
       supported_platform:
       - k8s
       - cf
+      - sm
+      templates: &director_templates
+      - action: sources
+        type: gotemplate
+        contentEncoded: <%=base64_template('samples/templates/gotemplates/director/sources.yaml') %>
+      - action: status
+        type: gotemplate
+        contentEncoded: <%=base64_template('samples/templates/gotemplates/director/status.yaml') %>
+      - action: provision
+        type: gotemplate
+        contentEncoded: <%=base64_template('samples/templates/gotemplates/director/provision.yaml') %>
+      - action: bind
+        type: gotemplate
+        contentEncoded: <%=base64_template('samples/templates/gotemplates/director/bind.yaml') %>
+      schemas: &blueprint_schemas
+        service_instance:
+          create:
+            parameters:
+              "$schema": "http://json-schema.org/draft-04/schema#"
+              additionalProperties: true
+              properties:
+                enum_foo:
+                  description: A property of the blueprint plan
+                  type: string
+                  enum:
+                  - bar
+                  - baz
+                  default: bar
     - &blueprint_plan4
       id: 'bc158c9a-7934-401e-94ab-057082a5073e'
       name: 'v1.0-small'
@@ -745,6 +782,7 @@ defaults: &defaults
           update_predecessors:
           - 'bc158c9a-7934-401e-94ab-057082a5073f'
           template: <%= base64_template('templates/blueprint-manifest.yml.ejs') %>
+          dashboard_url_template: <%= new Buffer('http://service-fabrik-broker.bosh-lite.com/manage/dashboards/director/instances/${instance_id}?planName=${plan.name}&serviceId=${plan.service.id}').toString('base64') %>
           releases: *dedicated_releases
           context: &context_plan4
             agent: *agent_blueprint
@@ -765,6 +803,8 @@ defaults: &defaults
       supported_platform:
       - k8s
       - cf
+      - sm
+      templates: *director_templates
     - &blueprint_plan5
       id: 'd616b00a-5949-4b1c-bc73-0d3c59f3954a'
       name: 'v1.0-large'
@@ -800,6 +840,9 @@ defaults: &defaults
       supported_platform:
       - k8s
       - cf
+      - sm
+      templates: *director_templates
+      schemas: *blueprint_schemas
     - &blueprint_plan8
       id: 'gd158c9a-7934-401e-94ab-057082a5073e'
       name: 'v2.0-xsmall'
@@ -814,6 +857,7 @@ defaults: &defaults
           update_predecessors:
           - 'bc158c9a-7934-401e-94ab-057082a5073f'
           template: <%= base64_template('templates/blueprint-manifest.yml.ejs') %>
+          dashboard_url_template: <%= new Buffer('manage/dashboards/director/instances/${instance_id}?planName=${plan.name}&serviceId=${plan.service.id}').toString('base64') %>
           releases: *dedicated_releases
           context: &context_plan7
             agent: *agent_blueprint
@@ -834,6 +878,8 @@ defaults: &defaults
       supported_platform:
       - k8s
       - cf
+      - sm
+      templates: *director_templates
     - &blueprint_plan6
       id: 'b91d9512-b5c9-4c4a-922a-fa54ae67d235'
       name: 'v1.0-dedicated-large-deprecated'
@@ -866,6 +912,8 @@ defaults: &defaults
         - '1 vCPUs'
         - '2 GB Memory'
         - '2 GB Disk'
+      templates: *director_templates
+      schemas: *blueprint_schemas
   ####################
   # RABBITMQ SERVICE #
   ####################
@@ -898,6 +946,9 @@ defaults: &defaults
       id: 'b715f834-2048-11e7-a560-080027afc1e6'
       name: 'v3.6-xsmall'
       free: false
+      # Asynch operations which supports parallel synch operations
+      # e.g. bind and unbind (sync) supported during update and backup (async)
+      supported_operations: *async_ops_supporting_parallel_sync_ops
       manager: &manager_plan9
         name: 'director'
         async: true
@@ -1015,6 +1066,88 @@ defaults: &defaults
         bullets:
         - 'Shared Deployment'
         - '1 VirtualHost'
+  ####################
+  #POSTGRESQL SERVICE#
+  ####################
+  - &postgresql_service
+    id: '6db542eb-8187-4afc-8a85-e08b4a3cc24e'
+    name: 'postgresql'
+    description: &description 'Relational database with an object-oriented model.'
+    bindable: true
+    tags:
+    - 'postgresql'
+    - 'relational'
+    metadata:
+      displayName: 'PostgreSQL'
+      longDescription: *description
+      providerDisplayName: 'SAP SE'
+      documentationUrl: 'https://help.sap.com/viewer/6be7ed96ddeb4e158c2107c434142545/Cloud/en-US/1cb29d5c1f714e71a79379c6b7482428.html'
+      supportUrl: 'https://help.sap.com/viewer/65de2977205c403bbc107264b8eccf4b/Cloud/en-US/5dd739823b824b539eee47b7860a00be.html'
+    dashboard_client:
+      id: 'service-fabrik-postgresql-client1'
+      secret: 'service-fabrik-postgresql-secret1'
+      redirect_uri: <%= redirect_uri %>
+    plan_updateable: true
+    plans:
+    ###########################
+    # DEDICATED SERVICE PLANS #
+    ###########################
+    - &postgresql_plan1
+      id: 'c41f368b-1eab-4d0f-b740-d9abdd14449f'
+      name: 'v9.6-tiny'
+      free: false
+      description: 'Postgresql 9.6 service tiny plan'
+      # Asynch operations which supports parallel synch operations
+      # e.g. bind and unbind (sync) supported during update and backup (async)
+      supported_operations: *async_ops_supporting_parallel_sync_ops
+      manager: &manager_plan11
+        name: 'director'
+        async: true
+        resource_mappings: *director_resource_mappings
+        settings: &settings_plan11
+          prefix: 'postgresql'
+          agent: *agent_postgresql
+          template: <%= base64_template('templates/postgresql-manifest.yml.ejs') %>
+          releases: &dedicated_releases
+          - { name: postgresql, version: 121 }
+          # An agent running in the deployment should implement Service Fabrik Agent APIs listed here https://cloudfoundry-incubator.github.io/service-fabrik-broker/api/agent_v1.1.html
+          - { name: broker-agent-postgresql, version: 83 }
+          context: &context_plan11
+            agent: *agent_postgresql
+            disk_type: 20GB
+            vm_type: default
+            max_connections: 50
+            max_wal_senders: 3
+            shared_buffers: 512MB
+            wal_keep_segments: 20
+
+    - &postgresqlsharedplan
+      id: '2fcf6682-5a4a-4297-a7cd-a97bbe085b8e'
+      name: 'shared-postgresql'
+      free: true
+      manager: &postgresql_manager
+        name: 'postgresql'
+        resource_mappings:
+          resource_group: 'deployment.servicefabrik.io'
+          resource_type: 'postgresqlmts'
+          bind:
+            resource_group: 'bind.servicefabrik.io'
+            resource_type: 'postgresqlmtbinds'
+        settings:
+          prefix: 'postgres'
+          agent: *agent_postgresql
+          context:
+            agent: *agent_postgresql
+      description: '[BETA] PostgreSQL database hosted on shared instances'
+      metadata:
+        service-inventory-key: SERVICE-89
+        skip_quota_check: true
+        costs:
+        - amount:
+            usd: 0.0
+          unit: 'MONTHLY'
+          bullets:
+          - 'Single database hosted in a shared dedicated instance'
 
 
 development: &development

@@ -1,4 +1,4 @@
-[![Coverage Status](https://coveralls.io/repos/github/cloudfoundry-incubator/service-fabrik-broker/badge.svg?branch=master)](https://coveralls.io/github/cloudfoundry-incubator/service-fabrik-broker?branch=master) [![Travis Build Status](https://travis-ci.org/cloudfoundry-incubator/service-fabrik-broker.svg?branch=master)](https://travis-ci.org/cloudfoundry-incubator/service-fabrik-broker.svg?branch=master)
+[![Coverage Status](https://coveralls.io/repos/github/cloudfoundry-incubator/service-fabrik-broker/badge.svg?branch=master)](https://coveralls.io/github/cloudfoundry-incubator/service-fabrik-broker?branch=master) [![Travis Build Status](https://travis-ci.org/cloudfoundry-incubator/service-fabrik-broker.svg?branch=master)](https://travis-ci.org/cloudfoundry-incubator/service-fabrik-broker.svg?branch=master) [![Go Report Card](https://goreportcard.com/badge/github.com/cloudfoundry-incubator/service-fabrik-broker)](https://goreportcard.com/report/github.com/cloudfoundry-incubator/service-fabrik-broker) [![codecov](https://codecov.io/gh/cloudfoundry-incubator/service-fabrik-broker/branch/master/graph/badge.svg)](https://codecov.io/gh/cloudfoundry-incubator/service-fabrik-broker)
 
 # Service Fabrik Broker for Cloud Foundry
 
@@ -16,7 +16,7 @@ To facilitate plugging in external components, we intend to model service Fabrik
 
 This allows capabilities like provisioning and operations on provisioned instances to be built independently and plugged into the Service Fabrik APIServer based on specific requirements.
 
-Steps to Integrate new provisioners are mentioned in [here](https://github.com/subhankarc/service-fabrik-broker/blob/master/SF2.0.md)
+Steps to Integrate new provisioners are mentioned in [here](https://github.com/cloudfoundry-incubator/service-fabrik-broker/blob/master/SF2.0.md)
 
 # Capabilities
 
@@ -24,7 +24,7 @@ Steps to Integrate new provisioners are mentioned in [here](https://github.com/s
 
 2. Bringing in new Backup and Restore approach and plugging in the existing framework is easier now.
 
-3. New Monitoring and Logging endpoint can be plugged in where the events generated while resource change and operations change can be watched by custom managers.
+3. New Monitoring and Logging endpoint can be plugged in where the events generated while resource change and operations change can be watched by custom operators.
 
 4. State of the service instances are managed in the API Server, so Cloud Controller and BOSH dependency can be something we can get rid of for state information. Hence, BOSH and Cloud Controller overload can be reduced.
 
@@ -38,7 +38,7 @@ Steps to Integrate new provisioners are mentioned in [here](https://github.com/s
 6. [Installing the Broker](#installing-the-broker)
 7. [Launch the Broker](#launch-the-broker)
 8. [Register the Broker](#register-the-broker)
-9. [Launch the Managers](#launch-the-managers)
+9. [Launch the Operators](#launch-the-operators)
 10. [Upload Bosh Director Based Service Releases](#upload-bosh-director-based-service-releases)
 11. [Run a Service Lifecycle](#run-a-service-lifecycle)
 12. [How to obtain Support](#how-to-obtain-support)
@@ -75,7 +75,7 @@ nvm use node
 
 ### Installing Bosh Lite
 
-Boshlite on Virtual Box (recommended):
+#### Boshlite on Virtual Box (recommended):
 Follow [this](https://github.com/cloudfoundry-incubator/service-fabrik-broker/wiki/Bootstrap-BOSH-2.0-with-local-VirtualBox) article for setting up boshlite env on virtual box.
 
 Bosh Lite is a lightweight local development environment for BOSH using Warden/Garden containers in a Vagrant box.
@@ -83,6 +83,11 @@ Bosh Lite is a lightweight local development environment for BOSH using Warden/G
 * Follow instructions at https://github.com/cloudfoundry/bosh-lite/blob/master/README.md#install-bosh-lite
 * Run `vagrant ssh` and then remove `8.8.8.8` from `/etc/resolv.conf` to avoid 5s timeouts
 * If you want to work with BOSH2.0 and want to deploy [bosh-deployment](https://github.com/cloudfoundry/bosh-deployment), then please follow the bosh-lite installation guide as described in https://bosh.io/docs/bosh-lite.
+
+#### Boshlite on a VM on AWS, GCP, or Azure:
+You can also deploy your boshlite on a VM on AWS, GCP, or Azure
+* Prepare your environment for specific IaaS with "Getting Started" guides at https://github.com/cloudfoundry/bosh-bootloader/blob/master/README.md
+* To setup boshlite on IaaS, follow instructions at https://github.com/cloudfoundry/cf-deployment/blob/master/iaas-support/bosh-lite/README.md
 
 ### Installing Cloud Foundry
 
@@ -134,7 +139,7 @@ Then, we need to upload the cloud-config required for service-fabrik on bosh.
 For bosh-lite, you can upload cloud-config in the following manner:
 ```shell
 cd templates
-bosh –e bosh upload-cloud-config config/cloud-config.yml
+bosh -e vbox update-cloud-config config/cloud-config.yml
 ```
 To use along with the boshrelease of Service-Fabrik, `cloud-config-boshlite.yml` is provided here : https://github.com/cloudfoundry-incubator/service-fabrik-boshrelease/blob/master/templates/cloud-config-boshlite.yml
 
@@ -206,13 +211,13 @@ curl -sk -u broker:secret -H "X-Broker-Api-Version: 2.9" https://127.0.0.1:9293/
 cf service-access # should show all services as enabled, cf marketplace should show the same
 ```
 
-### Launch the Managers
-For running lifecycle operations, corresponding manager processes have to be started. Currently Service Fabrik Broker supports Bosh Director based and Docker Based services.
+### Launch the Operators
+For running lifecycle operations, corresponding operator processes have to be started. Currently Service Fabrik Broker supports Bosh Director based and Docker Based services.
 
-Assuming that all required env variables (SETTINGS_PATH, NODE_ENV) are already set. Both bosh manager and docker manager can be launched.
+Assuming that all required env variables (SETTINGS_PATH, NODE_ENV) are already set. Both bosh operator and docker operator can be launched.
 ```shell
-node managers/StartBoshManagers.js #to start bosh manager
-node managers/StartDockerManagers.js #to start docker manager
+node operators/StartBoshOperators.js #to start bosh operator
+node operators/StartDockerOperators.js #to start docker operator
 ```
 
 ### Upload Bosh Director Based Service Releases

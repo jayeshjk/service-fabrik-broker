@@ -10,11 +10,6 @@ const ComputeClient = require('./ComputeClient');
 const CONST = require('../../common/constants');
 const BaseCloudClient = require('./BaseCloudClient');
 
-Promise.promisifyAll([
-  pkgcloud.storage.Container,
-  pkgcloud.storage.File
-]);
-
 const NotFound = errors.NotFound;
 const Unauthorized = errors.Unauthorized;
 
@@ -30,6 +25,8 @@ class CloudProviderClient extends BaseCloudClient {
     this.storage.getFilesAsync = Promise.promisify(this.storage.getFiles, {
       multiArgs: true
     });
+    this.storage.getContainerAsync = Promise.promisify(this.storage.getContainer, {});
+    this.storage.removeFileAsync = Promise.promisify(this.storage.removeFile, {});
     this.blockstorage = this.constructor.createComputeClient(_
       .chain(this.settings)
       .set('provider', this.provider)
@@ -49,6 +46,86 @@ class CloudProviderClient extends BaseCloudClient {
         logger.log(level, message);
       }
     });
+  }
+
+  createDiskFromSnapshot(snapshotId, zones, options = {}) {
+    let tags = [];
+    if (options.tags) {
+      options.tags.createdBy = 'service-fabrik';
+    } else {
+      options.tags = {
+        createdBy: 'service-fabrik'
+      };
+    }
+    tags.push({
+      ResourceType: 'volume',
+      Tags: _.keys(options.tags).map(tagKey => ({
+        Key: tagKey,
+        Value: options.tags[tagKey]
+      }))
+    });
+    return Promise.try(() => {
+      return this.blockstorage
+        .createVolume({
+          AvailabilityZone: _.isArray(zones) ? zones[0] : zones,
+          SnapshotId: snapshotId,
+          VolumeType: _.get(options, 'type', 'gp2'),
+          TagSpecifications: tags
+        })
+        .promise();
+    })
+      .then(volume => {
+        const describeReq = {
+          VolumeIds: [volume.VolumeId]
+        };
+        return this.blockstorage.waitFor('volumeAvailable', describeReq).promise();
+      })
+      .then(volResponse => volResponse.Volumes[0])
+      .then(volume => {
+        const responseTags = volume.Tags || [];
+        const outTags = {};
+        _.forEach(responseTags, tag => {
+          outTags[tag.Key] = tag.Value;
+        });
+        return {
+          volumeId: volume.VolumeId,
+          size: volume.Size,
+          zone: volume.AvailabilityZone,
+          type: volume.VolumeType,
+          extra: {
+            type: volume.VolumeType,
+            tags: outTags
+          }
+        };
+      });
+  }
+
+  getDiskMetadata(diskId) {
+    return Promise.try(() => {
+      return this.blockstorage
+        .describeVolumes({
+          VolumeIds: [diskId]
+        })
+        .promise();
+    })
+      .then(diskResponse => diskResponse.Volumes[0])
+      .then(volume => {
+        const responseTags = volume.Tags || [];
+        const outTags = {};
+        _.forEach(responseTags, tag => {
+          outTags[tag.Key] = tag.Value;
+        });
+        return {
+          volumeId: volume.VolumeId,
+          size: volume.Size,
+          zone: volume.AvailabilityZone,
+          type: volume.VolumeType,
+          extra: {
+            type: volume.VolumeType,
+            tags: outTags
+          }
+        };
+      });
   }
 
   getContainer(container) {
@@ -158,11 +235,11 @@ class CloudProviderClient extends BaseCloudClient {
         container: this.containerName,
         remote: file
       })
-      .then((data) => {
+      .then(data => {
         const response = JSON.parse(data);
         response.trigger = response.trigger === CONST.BACKUP.TRIGGER.MANUAL ? CONST.BACKUP.TRIGGER.SCHEDULED : response.trigger;
-        //The above conversion is done to handle existing CRON Jobs which set this trigger as 'manual' even for scheduled Jobs
-        //Above conversion can be removed and code changes can be revereted 14 days after the current fix goes live
+        // The above conversion is done to handle existing CRON Jobs which set this trigger as 'manual' even for scheduled Jobs
+        // Above conversion can be removed and code changes can be revereted 14 days after the current fix goes live
         return response;
       })
       .catchThrow(SyntaxError, new NotFound(`Object '${file}' not found`));
@@ -189,7 +266,7 @@ class CloudProviderClient extends BaseCloudClient {
       const pattern = new RegExp(`\/${options.keystoneAuthVersion}\/?$`);
       options.authUrl = options.authUrl.replace(pattern, '');
     }
-    return Promise.promisifyAll(pkgcloud.storage.createClient(options));
+    return pkgcloud.storage.createClient(options);
   }
 
   static createComputeClient(settings) {

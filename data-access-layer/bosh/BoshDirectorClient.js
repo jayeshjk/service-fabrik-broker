@@ -14,9 +14,14 @@ const HttpClient = utils.HttpClient;
 const config = require('../../common/config');
 const NotFound = errors.NotFound;
 const BadRequest = errors.BadRequest;
+const InternalServerError = errors.InternalServerError;
+const DirectorServiceUnavailable = errors.DirectorServiceUnavailable;
 const UaaClient = require('../cf/UaaClient');
 const TokenIssuer = require('../cf/TokenIssuer');
 const HttpServer = require('../../common/HttpServer');
+const EncryptionManager = require('../../common/utils/EncryptionManager');
+const eventmesh = require('../eventmesh');
+const BoshSshClient = require('./BoshSshClient');
 
 class BoshDirectorClient extends HttpClient {
   constructor() {
@@ -37,9 +42,9 @@ class BoshDirectorClient extends HttpClient {
     this.cacheLoadInProgressForDeployment = {};
     this.cacheLoadInProgress = false;
     this.uaaObjects = {};
-    //populate UAA objects if uaa based auth is being used by any of the directors
+    // populate UAA objects if uaa based auth is being used by any of the directors
     this.determineDirectorAuthenticationMethod();
-    this.ready = this.populateConfigCache();
+    this.ready = config.directors ? this.populateConfigCache() : Promise.resolve({});
   }
 
   determineDirectorAuthenticationMethod() {
@@ -53,7 +58,7 @@ class BoshDirectorClient extends HttpClient {
           logger.info(`UAA based authentication enabled successfully for ${directorName}.`);
           _.set(directorConfig, 'uaaEnabled', true);
         } else {
-          //Fatal error condition. Logging and exiting.
+          // Fatal error condition. Logging and exiting.
           logger.error(`UAA objects were not populated successfully for bosh ${directorName}. Exiting.`);
           HttpServer.immediateShutdown();
         }
@@ -74,7 +79,7 @@ class BoshDirectorClient extends HttpClient {
     /* create uaaClient and tokenIssuer for this director */
     let uaaUrl = _.get(directorConfig, 'uaa.uaa_url', undefined);
     if (!uaaUrl) {
-      logger.error(`UAA url not provided to populateUAAObjects.`);
+      logger.error('UAA url not provided to populateUAAObjects.');
       return;
     }
 
@@ -120,7 +125,7 @@ class BoshDirectorClient extends HttpClient {
   }
 
   getConfigByName(name) {
-    return _.head(_.filter(config.directors, (director) => director.name === name));
+    return _.head(_.filter(config.directors, director => director.name === name));
   }
 
   populateConfigCache() {
@@ -129,12 +134,12 @@ class BoshDirectorClient extends HttpClient {
     this.clearConfigCache();
     return Promise
       .map(config.directors,
-        (directorConfig) =>
-        this.getDeploymentsByConfig(directorConfig)
-        .then(deployments => {
-          this.updateCache(directorConfig, deployments);
-          logger.info('Updated cache for config - ', directorConfig.name);
-        }))
+        directorConfig =>
+          this.getDeploymentsByConfig(directorConfig)
+            .then(deployments => {
+              this.updateCache(directorConfig, deployments);
+              logger.info('Updated cache for config - ', directorConfig.name);
+            }))
       .finally(() => {
         this.cacheLoadInProgress = false;
         logger.info('Clearing cacheLoadInProgress flag. Bosh DeploymentName cache is loaded.');
@@ -146,10 +151,10 @@ class BoshDirectorClient extends HttpClient {
     this.cacheLoadInProgressForDeployment[deploymentName] = true;
     return Promise
       .map(config.directors,
-        (directorConfig) =>
-        this.getDeploymentByConfig(deploymentName, directorConfig)
-        .then(() => this.updateConfigCacheEntry(deploymentName, directorConfig))
-        .catch(errors.NotFound, () => logger.info(`${deploymentName} not found in -`, directorConfig.name)))
+        directorConfig =>
+          this.getDeploymentByConfig(deploymentName, directorConfig)
+            .then(() => this.updateConfigCacheEntry(deploymentName, directorConfig))
+            .catch(errors.NotFound, () => logger.info(`${deploymentName} not found in -`, directorConfig.name)))
       .finally(() => {
         this.cacheLoadInProgressForDeployment[deploymentName] = false;
         delete this.cacheLoadInProgressForDeployment[deploymentName];
@@ -233,7 +238,7 @@ class BoshDirectorClient extends HttpClient {
   makeRequest(requestDetails, expectedStatusCode, deploymentName, attempt) {
     return this.getDirectorConfig(deploymentName)
       .then(directorConfig => this.makeRequestWithConfig(requestDetails, expectedStatusCode, directorConfig))
-      .catch(NotFound, (err) => {
+      .catch(NotFound, err => {
         if (attempt === undefined && _.get(err, 'error.code') === CONST.BOSH_ERR_CODES.DEPLOYMENT_NOT_FOUND) {
           logger.info('Going to delete the entry from cache for the deployment:', deploymentName);
           this.deleteCacheEntry(deploymentName);
@@ -302,8 +307,9 @@ class BoshDirectorClient extends HttpClient {
   getDeployments() {
     return Promise
       .map(this.primaryConfigs,
-        (directorConfig) => this.getDeploymentsByConfig(directorConfig))
-      .reduce((all_deployments, deployments) => all_deployments.concat(deployments), []);
+        directorConfig => this.getDeploymentsByConfig(directorConfig))
+      .reduce((all_deployments, deployments) => all_deployments.concat(deployments), [])
+      .catch(err => this.convertHttpErrorAndThrow(err));
   }
 
   getDeploymentNameForInstanceId(guid) {
@@ -312,7 +318,7 @@ class BoshDirectorClient extends HttpClient {
       const match = _
         .chain(this.boshConfigCache)
         .keys()
-        .filter((name) => _.endsWith(name, guid))
+        .filter(name => _.endsWith(name, guid))
         .value();
       if (match.length > 0) {
         return match[0];
@@ -421,25 +427,25 @@ class BoshDirectorClient extends HttpClient {
       verbose: 2
     };
     return this.makeRequestWithConfig({
-        method: 'GET',
-        url: '/tasks',
-        qs: query
-      }, 200, directorConfig)
+      method: 'GET',
+      url: '/tasks',
+      qs: query
+    }, 200, directorConfig)
       .then(res => JSON.parse(res.body))
       .then(out => {
         // out is the array of currently running tasks
-        let taskGroup = _.groupBy(out, (entry) => {
+        let taskGroup = _.groupBy(out, entry => {
           switch (entry.context_id) {
-          case CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP_AUTO:
-            return CONST.FABRIK_SCHEDULED_OPERATION;
-          case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.CREATE}`:
-            return CONST.OPERATION_TYPE.CREATE;
-          case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.UPDATE}`:
-            return CONST.OPERATION_TYPE.UPDATE;
-          case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.DELETE}`:
-            return CONST.OPERATION_TYPE.DELETE;
-          default:
-            return CONST.UNCATEGORIZED;
+            case CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP_AUTO:
+              return CONST.FABRIK_SCHEDULED_OPERATION;
+            case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.CREATE}`:
+              return CONST.OPERATION_TYPE.CREATE;
+            case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.UPDATE}`:
+              return CONST.OPERATION_TYPE.UPDATE;
+            case `${CONST.BOSH_RATE_LIMITS.BOSH_FABRIK_OP}${CONST.OPERATION_TYPE.DELETE}`:
+              return CONST.OPERATION_TYPE.DELETE;
+            default:
+              return CONST.UNCATEGORIZED;
           }
         });
         return {
@@ -454,23 +460,23 @@ class BoshDirectorClient extends HttpClient {
   }
 
   createOrUpdateDeployment(action, manifest, opts, scheduled) {
-    const query = opts ? _.pick(opts, 'recreate', 'skip_drain', 'context') : undefined;
+    const query = opts ? ((action === CONST.OPERATION_TYPE.CREATE) ? _.pick(opts, 'recreate', 'skip_drain', 'context', 'canaries', 'max_in_flight') : _.pick(opts, 'recreate', 'skip_drain', 'context')) : undefined;
     const deploymentName = yaml.safeLoad(manifest).name;
     const boshDirectorName = _.get(opts, 'bosh_director_name');
     delete this.deploymentIpsCache[deploymentName];
     return Promise.try(() => {
-        if (action === CONST.OPERATION_TYPE.CREATE) {
-          if (boshDirectorName) {
-            return this.getConfigByName(boshDirectorName);
-          } else {
-            return _.sample(this.activePrimary);
-          }
+      if (action === CONST.OPERATION_TYPE.CREATE) {
+        if (boshDirectorName) {
+          return this.getConfigByName(boshDirectorName);
         } else {
-          return this
-            .getDirectorConfig(deploymentName);
+          return _.sample(this.activePrimary);
         }
-      })
-      .then((config) => {
+      } else {
+        return this
+          .getDirectorConfig(deploymentName);
+      }
+    })
+      .then(config => {
         if (config === undefined) {
           throw new errors.NotFound('Did not find any bosh director config which supports creation of deployment');
         }
@@ -495,7 +501,8 @@ class BoshDirectorClient extends HttpClient {
             this.boshConfigCache[deploymentName] = config;
           })
           .then(res => this.prefixTaskId(deploymentName, res));
-      });
+      })
+      .catch(err => this.convertHttpErrorAndThrow(err));
   }
 
   deleteDeployment(deploymentName) {
@@ -505,7 +512,8 @@ class BoshDirectorClient extends HttpClient {
         method: 'DELETE',
         url: `/deployments/${deploymentName}`
       }, 302, deploymentName)
-      .then(res => this.prefixTaskId(deploymentName, res));
+      .then(res => this.prefixTaskId(deploymentName, res))
+      .catch(err => this.convertHttpErrorAndThrow(err));
   }
 
   /* VirtualMachines operations */
@@ -524,17 +532,8 @@ class BoshDirectorClient extends HttpClient {
         method: 'GET',
         url: `/deployments/${deploymentName}/instances`
       }, 200, deploymentName)
-      .then(res => JSON.parse(res.body));
-  }
-
-  /* Property operations */
-  getDeploymentProperties(deploymentName) {
-    return this
-      .makeRequest({
-        method: 'GET',
-        url: `/deployments/${deploymentName}/properties`
-      }, 200, deploymentName)
-      .then(res => JSON.parse(res.body));
+      .then(res => JSON.parse(res.body))
+      .catch(err => this.convertHttpErrorAndThrow(err));
   }
 
   getDeploymentIps(deploymentName) {
@@ -542,16 +541,76 @@ class BoshDirectorClient extends HttpClient {
       if (this.deploymentIpsCache[deploymentName] !== undefined) {
         return this.deploymentIpsCache[deploymentName];
       } else {
-        return this
-          .getDeploymentInstances(deploymentName)
-          .reduce((ipList, instance) => ipList.concat(instance.ips), [])
-          .tap(response => {
-            logger.info(`Cached Ips for deployment - ${deploymentName} - `, response);
-            this.deploymentIpsCache[deploymentName] = response;
+        return this.getDeploymentIpsFromResource(deploymentName)
+          .then(ips => {
+            if (!_.isEmpty(ips)) {
+              logger.info(`[getDeploymentIps] Cached Ips for deployment - ${deploymentName} - `, ips);
+              this.deploymentIpsCache[deploymentName] = ips;
+              return ips;
+            } else {
+              return this.getDeploymentIpsFromDirector(deploymentName)
+                .then(ips => {
+                  logger.info('[getDeploymentIps] Caching IPs on ApiServer and locally');
+                  this.deploymentIpsCache[deploymentName] = ips;
+                  return this.putDeploymentIpsInResource(deploymentName, ips)
+                    .then(() => ips);
+                });
+            }
           });
       }
     });
+  }
 
+  getDeploymentIpsFromResource(deploymentName) {
+    logger.info(`[getDeploymentIps] making request to ApiServer for deployment - ${deploymentName}`);
+    let resourceId = utils.parseServiceInstanceIdFromDeployment(deploymentName);
+    if (deploymentName === resourceId) {
+      // don't contact to ApiServer if it is out-of-band deployment
+      return Promise.resolve();
+    }
+    return eventmesh.apiServerClient.getResource({
+      resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT,
+      resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR,
+      resourceId: resourceId
+    })
+      .then(resource => JSON.parse(_.get(resource, 'metadata.annotations.deploymentIps', '{}')))
+      .catch(err => {
+        logger.error(`[getDeploymentIps] Error occurred while getting deployment Ips for ${deploymentName} from ApiServer`, err);
+        return;
+      });
+  }
+
+  putDeploymentIpsInResource(deploymentName, ips) {
+    let resourceId = utils.parseServiceInstanceIdFromDeployment(deploymentName);
+    if (deploymentName === resourceId) {
+      // don't contact to ApiServer if it is out-of-band deployment
+      return Promise.resolve();
+    }
+    return eventmesh.apiServerClient.updateResource({
+      resourceGroup: CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT,
+      resourceType: CONST.APISERVER.RESOURCE_TYPES.DIRECTOR,
+      resourceId: resourceId,
+      metadata: {
+        annotations: {
+          deploymentIps: JSON.stringify(ips)
+        }
+      }
+    })
+      .catch(err => {
+        logger.error(`[getDeploymentIps] Error occured while updating resource for ${deploymentName} on ApiServer`, err);
+        return;
+      });
+  }
+
+  getDeploymentIpsFromDirector(deploymentName) {
+    logger.info(`[getDeploymentIps] making request to director for deployment - ${deploymentName}`);
+    return this
+      .getDeploymentInstances(deploymentName)
+      .reduce((ipList, instance) => ipList.concat(instance.ips), [])
+      .tap(response => {
+        logger.info(`Cached Ips for deployment - ${deploymentName} - `, response);
+        this.deploymentIpsCache[deploymentName] = response;
+      });
   }
 
   getAgentPropertiesFromManifest(deploymentName) {
@@ -564,13 +623,13 @@ class BoshDirectorClient extends HttpClient {
       .then(manifest => {
         if (manifest.instance_groups) {
           let agentJob = {};
-          _.each(manifest.instance_groups, (instance_group) => {
+          _.each(manifest.instance_groups, instance_group => {
             agentJob = _.find(instance_group.jobs, job => job.name === CONST.AGENT.NAME);
             return !agentJob;
           });
           return agentJob.properties.agent || agentJob.properties;
         } else {
-          //This section has been retained to support backward compatibility for instances of bosh v1 manifest.
+          // This section has been retained to support backward compatibility for instances of bosh v1 manifest.
           // TODO: this must be removed once the migration to bosh v2 manifest is done to avoid confusion. 
           return manifest.properties.agent;
         }
@@ -597,8 +656,8 @@ class BoshDirectorClient extends HttpClient {
           qs: {
             format: 'full'
           }
-        }, 302)
-        .then(res => this.prefixTaskId(deploymentName, res));
+        }, 302, deploymentName)
+        .then(res => self.prefixTaskId(deploymentName, res));
     }
 
 
@@ -612,10 +671,10 @@ class BoshDirectorClient extends HttpClient {
             throw err;
           }
         }), {
-          maxAttempts: 8,
-          minDelay: 500,
-          predicate: err => _.includes(['processing', 'queued'], err.state)
-        });
+        maxAttempts: 8,
+        minDelay: 500,
+        predicate: err => _.includes(['processing', 'queued'], err.state)
+      });
     }
 
     function getTaskResult(taskId) {
@@ -640,24 +699,24 @@ class BoshDirectorClient extends HttpClient {
           .then(task => {
             const timestamp = new Date(task.timestamp * 1000).toISOString();
             switch (task.state) {
-            case 'done':
-              logger.info(`Task ${task.deployment} succeeded`);
-              clearInterval(timer);
-              return resolve(task);
-            case 'error':
-            case 'cancelled':
-            case 'timeout':
-              clearInterval(timer);
-              const errMsg = `Task ${task.deployment} failed at ${timestamp} with error "${task.result}"`;
-              logger.error(errMsg);
-              return reject(new Error(errMsg), task);
-            default:
-              const time = Date.now() - startTime;
-              if (time >= (timeout || Infinity)) {
-                logger.error(`deployment ${task.deployment} failed! Failed to provision MongoDB!`);
-                return reject(Timeout.timedOut(time), task);
-              }
-              logger.debug(`Task ${task.deployment} - is still - ${task.state}. Task state polling will continue...`);
+              case 'done':
+                logger.info(`Task ${task.deployment} succeeded`);
+                clearInterval(timer);
+                return resolve(task);
+              case 'error':
+              case 'cancelled':
+              case 'timeout':
+                clearInterval(timer);
+                const errMsg = `Task ${task.deployment} failed at ${timestamp} with error "${task.result}"`;
+                logger.error(errMsg);
+                return reject(new Error(errMsg), task);
+              default:
+                const time = Date.now() - startTime;
+                if (time >= (timeout || Infinity)) {
+                  logger.error(`deployment ${task.deployment} failed! Failed to provision MongoDB!`);
+                  return reject(Timeout.timedOut(time), task);
+                }
+                logger.debug(`Task ${task.deployment} - is still - ${task.state}. Task state polling will continue...`);
             }
           })
           .catch(err => {
@@ -672,66 +731,6 @@ class BoshDirectorClient extends HttpClient {
       const timer = setInterval(statePoller,
         pollInterval || this.activePrimary[0].default_task_poll_interval);
     });
-  }
-
-  createDeploymentProperty(deploymentName, propertyName, propertyValue) {
-    return this
-      .makeRequest({
-        method: 'POST',
-        url: `/deployments/${deploymentName}/properties`,
-        json: true,
-        body: {
-          name: propertyName,
-          value: propertyValue
-        }
-      }, 204, deploymentName);
-  }
-
-  updateDeploymentProperty(deploymentName, propertyName, propertyValue) {
-    return this
-      .makeRequest({
-        method: 'PUT',
-        url: `/deployments/${deploymentName}/properties/${propertyName}`,
-        json: true,
-        body: {
-          value: propertyValue
-        }
-      }, 204, deploymentName);
-  }
-
-  createOrUpdateDeploymentProperty(deploymentName, propertyName, propertyValue) {
-    return this
-      .createDeploymentProperty(deploymentName, propertyName, propertyValue)
-      .catch(BadRequest, err => {
-        /* jshint unused:false */
-        return this.updateDeploymentProperty(deploymentName, propertyName, propertyValue);
-      });
-  }
-
-  updateOrCreateDeploymentProperty(deploymentName, propertyName, propertyValue) {
-    return this
-      .updateDeploymentProperty(deploymentName, propertyName, propertyValue)
-      .catch(NotFound, err => {
-        /* jshint unused:false */
-        return this.createDeploymentProperty(deploymentName, propertyName, propertyValue);
-      });
-  }
-
-  getDeploymentProperty(deploymentName, propertyName) {
-    return this
-      .makeRequest({
-        method: 'GET',
-        url: `/deployments/${deploymentName}/properties/${propertyName}`
-      }, 200, deploymentName)
-      .then(res => JSON.parse(res.body).value);
-  }
-
-  deleteDeploymentProperty(deploymentName, propertyName) {
-    return this
-      .makeRequest({
-        method: 'DELETE',
-        url: `/deployments/${deploymentName}/properties/${propertyName}`
-      }, 204, deploymentName);
   }
 
   /*  Task operations */
@@ -755,18 +754,15 @@ class BoshDirectorClient extends HttpClient {
             return task;
           });
       })
-      .reduce((all_tasks, tasks) => all_tasks.concat(tasks), []);
+      .reduce((all_tasks, tasks) => all_tasks.concat(tasks), [])
+      .catch(err => this.convertHttpErrorAndThrow(err));
   }
 
   getTask(taskId) {
     const splitArray = this.parseTaskid(taskId);
     if (splitArray === null) {
-      return this
-        .makeRequestWithConfig({
-          method: 'GET',
-          url: `/tasks/${taskId}`
-        }, 200, this.getConfigByName(CONST.BOSH_DIRECTORS.BOSH))
-        .then(res => JSON.parse(res.body));
+      // Required format is deploymentName_taskId.
+      throw new errors.UnprocessableEntity(`Not able to query correct bosh as taskId is not in required format: ${taskId}.`);
     }
     const deploymentName = splitArray[1];
     const taskIdAlone = splitArray[2];
@@ -781,21 +777,8 @@ class BoshDirectorClient extends HttpClient {
   getTaskResult(taskId) {
     const splitArray = this.parseTaskid(taskId);
     if (splitArray === null) {
-      return this
-        .makeRequestWithConfig({
-          method: 'GET',
-          url: `/tasks/${taskId}/output`,
-          qs: {
-            type: 'result'
-          }
-        }, 200, this.getConfigByName(CONST.BOSH_DIRECTORS.BOSH))
-        .then(res => _
-          .chain(res.body)
-          .split('\n')
-          .compact()
-          .map(JSON.parse)
-          .value()
-        );
+      // Required format is deploymentName_taskId.
+      throw new errors.UnprocessableEntity(`Not able to query correct bosh as taskId is not in required format: ${taskId}.`);
     }
     const deploymentName = splitArray[1];
     const taskIdAlone = splitArray[2];
@@ -843,32 +826,150 @@ class BoshDirectorClient extends HttpClient {
       .then(res => {
         const taskId = this.lastSegment(res.headers.location);
         logger.info(`Sent signal to ${deploymentName} for result state ${expectedState}, BOSH task ID: ${taskId}`);
-        return taskId;
+        return this.prefixTaskId(deploymentName, res);
+      });
+  }
+
+  setupSsh(deploymentName, jobName, instanceId, tempUser, publicKey) {
+    return this.makeRequest({ // jshint ignore: line
+      method: 'POST',
+      url: `/deployments/${deploymentName}/ssh`,
+      body: {
+        command: 'setup',
+        deployment_name: deploymentName,
+        target: {
+          job: jobName,
+          ids: [instanceId]
+        },
+        params: {
+          user: tempUser,
+          public_key: publicKey
+        }
+      },
+      json: true
+    }, CONST.HTTP_STATUS_CODE.FOUND, deploymentName);
+  }
+
+  cleanupSsh(deploymentName, jobName, instanceId, tempUser) {
+    return this.makeRequest({
+      method: 'POST',
+      url: `/deployments/${deploymentName}/ssh`,
+      body: {
+        command: 'cleanup',
+        deployment_name: deploymentName,
+        target: {
+          job: jobName,
+          ids: [instanceId]
+        },
+        params: {
+          user_regex: `^${tempUser}`
+        }
+      },
+      json: true
+    }, CONST.HTTP_STATUS_CODE.FOUND, deploymentName);
+  }
+
+  async runSsh(deploymentName, jobName, instanceId, command) { // jshint ignore: line
+    const cryptoManager = new EncryptionManager();
+    /* temporary username below is clipped to length of 16 characters to satisfy restrictions (32 chars) on length
+       by useradd command used on destination instances */
+    const tempUser = `sf-${Math.random().toString(36).substring(2, 15)}`;
+    const genKeyPair = await cryptoManager.generateSshKeyPair(tempUser); // jshint ignore: line
+    const sshSetupResponse = await this.setupSsh(deploymentName, jobName, instanceId, tempUser, genKeyPair.publicKey); // jshint ignore: line
+    const sshSetupTaskId = this.prefixTaskId(deploymentName, sshSetupResponse);
+    await this.pollTaskStatusTillComplete(sshSetupTaskId, 2000); // jshint ignore: line
+    const sshSetupResult = await this.getTaskResult(sshSetupTaskId); // jshint ignore: line
+    const sshOptions = {
+      host: sshSetupResult[0][0].ip,
+      username: tempUser,
+      privateKey: genKeyPair.privateKey
+    };
+    const boshDeploymentOptions = {
+      deploymentName: deploymentName,
+      job: jobName,
+      instanceId: instanceId
+    };
+    const boshSshClient = new BoshSshClient(sshOptions, boshDeploymentOptions);
+    const sshOutput = await boshSshClient.run(command); // jshint ignore: line
+    await this.cleanupSsh(deploymentName, jobName, instanceId, tempUser); // jshint ignore: line
+    return sshOutput;
+  }
+
+  getDeploymentErrands(deploymentName) {
+    return this.makeRequest({
+      method: 'GET',
+      url: `/deployments/${deploymentName}/errands`
+    }, CONST.HTTP_STATUS_CODE.OK, deploymentName)
+      .then(res => JSON.parse(res.body));
+  }
+
+  /**
+   * Trigger the errand on specific instances and get the task id correspnding to errand
+   * @param {string} deploymentName - Deployment on which errand is to be started
+   * @param {string} errandName - errand name
+   * @param {Object[]}  instances - array of the instances on which the errand is to be triggered
+   * @param {string}  instances[].group - instance group
+   * @param {string}  instances[].id - instance index or id
+   */
+  runDeploymentErrand(deploymentName, errandName, instances = []) {
+    return this.makeRequest({
+      method: 'POST',
+      url: `/deployments/${deploymentName}/errands/${errandName}/runs`,
+      body: {
+        'keep-alive': true,
+        'instances': instances
+      },
+      json: true
+    }, CONST.HTTP_STATUS_CODE.FOUND, deploymentName)
+      .then(res => {
+        const taskId = this.lastSegment(res.headers.location);
+        logger.info(`Triggered errand ${errandName} on instances ${instances} of deployment ${deploymentName}. Task Id: ${taskId}.`);
+        return this.prefixTaskId(deploymentName, res);
+      });
+  }
+
+  createDiskAttachment(deploymentName, diskCid, jobName, instanceId, diskProperties = 'copy') {
+    return this.makeRequest({
+      method: 'PUT',
+      url: `/disks/${diskCid}/attachments`,
+      qs: {
+        deployment: deploymentName,
+        job: jobName,
+        instance_id: instanceId,
+        disk_properties: diskProperties || 'copy'
+      }
+    }, CONST.HTTP_STATUS_CODE.FOUND, deploymentName)
+      .then(res => {
+        const taskId = this.lastSegment(res.headers.location);
+        logger.info(`Triggered disk attachment with paramaters --> \
+        deploymentName: ${deploymentName}, jobName: ${jobName}, instanceId: ${instanceId}, diskCid: ${diskCid}. Task Id: ${taskId}.`);
+        return this.prefixTaskId(deploymentName, res);
+      });
+  }
+
+  getPersistentDisks(deploymentName, instanceFilter = []) {
+    if (!instanceFilter || !_.isArray(instanceFilter)) {
+      instanceFilter = [];
+    }
+    return this.getDeploymentVmsVitals(deploymentName)
+      .then(instances => _.filter(instances, instance => _.includes(instanceFilter, instance.job_name)))
+      .then(filteredInstances => {
+        return _.chain(filteredInstances)
+          .map(i => ({
+            job_name: _.get(i, 'job_name'),
+            id: _.get(i, 'id'),
+            disk_cid: _.get(i, 'disk_cid'),
+            az: _.get(i, 'cloud_properties.availability_zone') || _.get(i, 'cloud_properties.zone')
+          }))
+          .value();
       });
   }
 
   getTaskEvents(taskId) {
     const splitArray = this.parseTaskid(taskId);
     if (splitArray === null) {
-      return this
-        .makeRequestWithConfig({
-          method: 'GET',
-          url: `/tasks/${taskId}/output`,
-          qs: {
-            type: 'event'
-          }
-        }, 200, this.getConfigByName(CONST.BOSH_DIRECTORS.BOSH))
-        .then(res => {
-          let events = [];
-          _.trim(res.body).split('\n').forEach((event) => {
-            try {
-              events.push(JSON.parse(event));
-            } catch (err) {
-              logger.error(`Error parsing task ${taskId} event ${event}: event response - ${res.body} `, err);
-            }
-          });
-          return events;
-        });
+      // Required format is deploymentName_taskId.
+      throw new errors.UnprocessableEntity(`Not able to query correct bosh as taskId is not in required format: ${taskId}.`);
     }
     const deploymentName = splitArray[1];
     const taskIdAlone = splitArray[2];
@@ -882,7 +983,7 @@ class BoshDirectorClient extends HttpClient {
       }, 200, deploymentName)
       .then(res => {
         let events = [];
-        _.trim(res.body).split('\n').forEach((event) => {
+        _.trim(res.body).split('\n').forEach(event => {
           try {
             events.push(JSON.parse(event));
           } catch (err) {
@@ -905,6 +1006,14 @@ class BoshDirectorClient extends HttpClient {
 
   lastSegment(url) {
     return _.last(parseUrl(url).path.split('/'));
+  }
+
+  convertHttpErrorAndThrow(err) {
+    if ((err instanceof InternalServerError) || _.includes(CONST.SYSTEM_ERRORS, err.code)) {
+      throw new DirectorServiceUnavailable(err.message);
+    } else {
+      throw err;
+    }
   }
 }
 

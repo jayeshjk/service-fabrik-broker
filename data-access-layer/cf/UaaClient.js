@@ -22,10 +22,13 @@ class UaaClient extends HttpClient {
     this.clientId = config.cf.client_id || 'cf';
   }
 
-  authorizationUrl(options) {
+  authorizationUrl(options, loginHint) {
     options = _.assign({
       response_type: 'code'
     }, options);
+    if (loginHint && loginHint !== '') {
+      options.login_hint = `{"origin":"${loginHint}"}`;
+    }
     if (Array.isArray(options.scope)) {
       options.scope = options.scope.join(' ');
     }
@@ -43,7 +46,7 @@ class UaaClient extends HttpClient {
         schema: 'openid'
       },
       json: true
-    }, 200).then((res) => {
+    }, 200).then(res => {
       return res.body;
     });
   }
@@ -89,7 +92,7 @@ class UaaClient extends HttpClient {
         code: code,
         redirect_uri: client.redirect_uri
       }
-    }, 200).then((res) => {
+    }, 200).then(res => {
       return JSON.parse(res.body);
     });
   }
@@ -106,7 +109,7 @@ class UaaClient extends HttpClient {
   }
 
   accessWithPassword(username, password) {
-    return this.request({
+    const reqBody = {
       method: 'POST',
       url: '/oauth/token',
       auth: {
@@ -119,7 +122,11 @@ class UaaClient extends HttpClient {
         username: username,
         password: password
       }
-    }, 200).then((res) => {
+    };
+    if (config.cf.identity_provider) {
+      reqBody.form.login_hint = `{"origin":"${config.cf.identity_provider}"}`;
+    }
+    return this.request(reqBody, 200).then(res => {
       return JSON.parse(res.body);
     });
   }
@@ -136,7 +143,7 @@ class UaaClient extends HttpClient {
         grant_type: 'refresh_token',
         refresh_token: refreshToken
       }
-    }, 200).then((res) => {
+    }, 200).then(res => {
       return JSON.parse(res.body);
     });
   }
@@ -153,7 +160,7 @@ class UaaClient extends HttpClient {
         grant_type: 'client_credentials',
         response_type: 'token'
       }
-    }, 200).then((res) => {
+    }, 200).then(res => {
       return JSON.parse(res.body);
     });
   }

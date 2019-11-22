@@ -258,6 +258,15 @@ describe('eventmesh', () => {
     });
 
     describe('#unlock', () => {
+      let sandbox, delayStub;
+      before(function () {
+        sandbox = sinon.createSandbox();
+        delayStub = sandbox.stub(Promise, 'delay').callsFake(() => Promise.resolve(true));
+      });
+
+      after(function () {
+        delayStub.restore();
+      });
       it('should successfully unlock resource in first try without lockId', () => {
         const payload2 = {
           metadata: {

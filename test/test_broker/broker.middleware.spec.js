@@ -16,7 +16,7 @@ const utils = require('../../common/utils');
 const errors = require('../../common/errors');
 const BadRequest = errors.BadRequest;
 const Forbidden = errors.Forbidden;
-const PROMISE_WAIT_SIMULATED_DELAY = 2;
+const PROMISE_WAIT_SIMULATED_DELAY = 30;
 
 class Response {
   constructor() {
@@ -28,7 +28,7 @@ class Response {
   }
   reset() {
     this.constructor.methods.forEach((method) => {
-      this[method].reset();
+      this[method].resetHistory();
     });
   }
   static get methods() {
@@ -73,6 +73,12 @@ describe('#timeout', function () {
 });
 
 describe('#checkQuota', () => {
+  before(function () {
+    config.quota.enabled = true;
+  });
+  after(function () {
+    config.quota.enabled = false;
+  });
   /* jshint expr:true */
   const service_id = '24731fb8-7b84-4f57-914f-c3d55d793dd4';
   const plan_id = 'bc158c9a-7934-401e-94ab-057082a5073f'; // name: 'v1.0-xsmall'
@@ -195,7 +201,7 @@ describe('#checkQuota', () => {
     checkQuotaStub.withArgs(organization_guid, validQuotaPlanId, undefined, 'PATCH').returns(Promise.resolve(CONST.QUOTA_API_RESPONSE_CODES.VALID_QUOTA));
   });
   afterEach(function () {
-    next.reset();
+    next.resetHistory();
     res.reset();
     isServiceFabrikOperationStub.restore();
     checkQuotaStub.restore();
@@ -219,7 +225,8 @@ describe('#checkQuota', () => {
     checkQuota(req, res, next);
     expect(isServiceFabrikOperationStub).to.have.been.calledOnce;
     expect(checkQuotaStub).to.not.have.been.called;
-    expect(next).to.have.been.calledOnce.calledWithExactly(new BadRequest(`organization_id is undefined`));
+    expect(next).to.have.been.calledOnce;
+    expect(next.getCall(0).args[0] instanceof BadRequest);
   });
   it('Quota not entitled, should call next with Forbidden', () => {
     req.body = notEntitledBody;
@@ -227,7 +234,10 @@ describe('#checkQuota', () => {
     expect(isServiceFabrikOperationStub).to.have.been.calledOnce;
     expect(checkQuotaStub).to.have.been.called;
     return Promise.delay(PROMISE_WAIT_SIMULATED_DELAY)
-      .then(() => expect(next).to.have.been.calledOnce.calledWithExactly(new Forbidden(`Not entitled to create service instance`)));
+      .then(() => {
+        expect(next).to.have.been.calledOnce;
+        expect(next.getCall(0).args[0] instanceof Forbidden);
+      });
   });
   it('Quota invalid, should call next with Forbidden', () => {
     req.body = invalidQuotaBody;
@@ -235,7 +245,10 @@ describe('#checkQuota', () => {
     expect(isServiceFabrikOperationStub).to.have.been.calledOnce;
     expect(checkQuotaStub).to.have.been.called;
     return Promise.delay(PROMISE_WAIT_SIMULATED_DELAY)
-      .then(() => expect(next).to.have.been.calledOnce.calledWithExactly(new Forbidden(`Quota is not sufficient for this request`)));
+      .then(() => {
+        expect(next).to.have.been.calledOnce;
+        expect(next.getCall(0).args[0] instanceof Forbidden);
+      });
   });
   it('Quota valid, should call next', () => {
     req.body = validQuotaBody;

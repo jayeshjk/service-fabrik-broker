@@ -9,7 +9,7 @@ const DockerClient = require('./DockerClient');
 const DockerPortRegistry = require('./DockerPortRegistry');
 const DockerCredentials = require('./DockerCredentials');
 const errors = require('../../common/errors');
-const ServiceUnavailable = errors.ServiceUnavailable;
+const DockerServiceUnavailable = errors.DockerServiceUnavailable;
 
 class Docker {
   constructor() {
@@ -88,8 +88,8 @@ class Docker {
       .map(images, image => this.client
         .createImageAsync(image)
         .then(stream => this.client.followProgressAsync(stream)), {
-          concurrency: 7
-        })
+        concurrency: 7
+      })
       .then(results => _
         .chain(results)
         .map(events => _.last(events))
@@ -106,7 +106,7 @@ class Docker {
   acquirePort(protocol) {
     const port = this.portRegistry.sample(protocol);
     if (!port) {
-      throw new ServiceUnavailable('All dynamic ports have been exhausted!');
+      throw new DockerServiceUnavailable('All dynamic ports have been exhausted!');
     }
     return port;
   }

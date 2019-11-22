@@ -10,6 +10,7 @@ const tokenEndpointUrl = 'https://uaa.bosh-lite.com';
 const authorizationEndpointUrl = 'https://login.bosh-lite.com';
 const jwtToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjI1MzQwMjMwMDc5OSwidXNlcl9pZCI6Im1lIiwic2NvcGUiOlsib3BlbmlkIiwiY2xvdWRfY29udHJvbGxlci53cml0ZSIsImNsb3VkX2NvbnRyb2xsZXJfc2VydmljZV9wZXJtaXNzaW9ucy5yZWFkIl19.ClDfNqT9T1_5LicTpqNrHJ9Fv-UwkLVZNWG71PjCAVQ';
 const jwtTokenInsufficientScopes = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjI1MzQwMjMwMDc5OSwidXNlcl9pZCI6Im1lIiwic2NvcGUiOlsib3BlbmlkIl19.5mRXvmEVV9g970m5XuQe-NlLP-z95jKj6W3sfnIfjBw';
+const jwtTokenOtherUser = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjI1MzQwMjMwMDc5OSwidXNlcl9pZCI6Im90aGVyVXNlciIsInNjb3BlIjpbIm9wZW5pZCIsImNsb3VkX2NvbnRyb2xsZXIud3JpdGUiLCJjbG91ZF9jb250cm9sbGVyX3NlcnZpY2VfcGVybWlzc2lvbnMucmVhZCJdfQ.p-qsItU7E3CCKwYi0CjgPKmt-ZSqlOjC8sLEp4-Twwo';
 const authorizationCode = 'F45jH';
 const redirect_uri = `https://${config.external.host}/manage/auth/cf/callback`;
 const user_id = 'me';
@@ -33,9 +34,11 @@ exports.jwtTokenInsufficientScopes = jwtTokenInsufficientScopes;
 exports.authorizationCode = authorizationCode;
 exports.getAccessToken = getAccessToken;
 exports.getAuthorizationCode = getAuthorizationCode;
+exports.getAuthorizationCodeLoginHint = getAuthorizationCodeLoginHint;
 exports.getAccessTokenWithAuthorizationCode = getAccessTokenWithAuthorizationCode;
 exports.getUserInfo = getUserInfo;
 exports.tokenKey = tokenKey;
+exports.jwtTokenOtherUser = jwtTokenOtherUser;
 
 function getAccessToken() {
   return nock(tokenEndpointUrl)
@@ -100,7 +103,7 @@ function tokenKey() {
     });
 }
 
-function getAuthorizationCode(service_id) {
+function getAuthorizationCode(service_id, times) {
   const dashboard_client = catalog.getService(service_id).dashboard_client;
   return nock(authorizationEndpointUrl)
     .get('/oauth/authorize')
@@ -115,6 +118,29 @@ function getAuthorizationCode(service_id) {
       })
       .value()
     )
+    .times(times || 1)
+    .reply(302, null, {
+      location: req => `${redirect_uri}?code=${authorizationCode}&state=${parseUrl(req.path, true).query.state}`
+    });
+}
+
+function getAuthorizationCodeLoginHint(service_id, times) {
+  const dashboard_client = catalog.getService(service_id).dashboard_client;
+  return nock(authorizationEndpointUrl)
+    .get('/oauth/authorize')
+    .query(query => _
+      .chain(query)
+      .omit('state')
+      .isEqual({
+        response_type: 'code',
+        client_id: dashboard_client.id,
+        redirect_uri: redirect_uri,
+        scope: 'cloud_controller_service_permissions.read openid',
+        login_hint: `{"origin":"uaa"}`
+      })
+      .value()
+    )
+    .times(times || 1)
     .reply(302, null, {
       location: req => `${redirect_uri}?code=${authorizationCode}&state=${parseUrl(req.path, true).query.state}`
     });

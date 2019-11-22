@@ -59,6 +59,18 @@ describe('Jobs', function () {
       const transactionLogsPathname19 = `/${serviceContainer}/${transactionLogsFileName19Daysprior}`;
       const transactionLogsPathname16 = `/${serviceContainer}/${transactionLogsFileName16DaysPrior}`;
       const transactionLogsPathname18 = `/${serviceContainer}/${transactionLogsFileName18DaysPrior}`;
+      const dummyDeploymentResource = {
+        spec: {
+          options: JSON.stringify({
+            service_id: service_id,
+            plan_id: plan_id,
+            context: {
+              platform: 'cloudfoundry',
+            },
+            space_guid: space_guid,
+          })
+        }
+      };
       const scheduled_data = {
         trigger: CONST.BACKUP.TRIGGER.SCHEDULED,
         type: 'online',
@@ -133,7 +145,7 @@ describe('Jobs', function () {
         mocks.cloudProvider.getContainer(container);
         baseJobLogRunHistoryStub = sinon.stub(BaseJob, 'logRunHistory');
         baseJobLogRunHistoryStub.withArgs().returns(Promise.resolve({}));
-        delayStub = sinon.stub(Promise, 'delay', () => Promise.resolve());
+        delayStub = sinon.stub(Promise, 'delay').callsFake(() => Promise.resolve());
         cancelScheduleStub = sinon.stub(ScheduleManager, 'cancelSchedule');
         cancelScheduleStub.withArgs(failed_instance_id).returns(Promise.reject(new errors.ServiceUnavailable('Scheduler Unavailable')));
         cancelScheduleStub.returns(Promise.resolve({}));
@@ -148,11 +160,11 @@ describe('Jobs', function () {
 
       afterEach(function () {
         job.attrs.data.instance_id = instance_id;
-        baseJobLogRunHistoryStub.reset();
-        cancelScheduleStub.reset();
-        runAtStub.reset();
-        scheduleStub.reset();
-        delayStub.reset();
+        baseJobLogRunHistoryStub.resetHistory();
+        cancelScheduleStub.resetHistory();
+        runAtStub.resetHistory();
+        scheduleStub.resetHistory();
+        delayStub.resetHistory();
         job.attrs.data.attempt = 1;
         saveJobFailure = false;
       });
@@ -169,7 +181,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -209,7 +221,7 @@ describe('Jobs', function () {
         mocks.cloudProvider.remove(transactionLogsPathname19);
         mocks.cloudProvider.remove(transactionLogsPathname18);
         mocks.cloudProvider.remove(transactionLogsPathname16);
-        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid, false);
         return ScheduleBackupJob.run(job, () => {
           mocks.verify();
           const expectedBackupResponse = {
@@ -235,7 +247,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -275,7 +287,7 @@ describe('Jobs', function () {
           getBackupData(backup_guid16, CONST.BACKUP.TRIGGER.SCHEDULED, started16DaysPrior, CONST.OPERATION.SUCCEEDED));
         mocks.cloudProvider.download(pathname18,
           getBackupData(backup_guid2, CONST.BACKUP.TRIGGER.SCHEDULED, started18DaysPrior, CONST.OPERATION.SUCCEEDED));
-        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid, false);
         mocks.cloudProvider.remove(transactionLogsPathname19);
         mocks.cloudProvider.remove(transactionLogsPathname18);
         mocks.cloudProvider.remove(transactionLogsPathname16);
@@ -304,7 +316,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -370,7 +382,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -409,9 +421,9 @@ describe('Jobs', function () {
           getBackupData(backup_guid16, CONST.BACKUP.TRIGGER.SCHEDULED, started16DaysPrior, CONST.OPERATION.FAILED));
         mocks.cloudProvider.download(pathname18,
           getBackupData(backup_guid2, CONST.BACKUP.TRIGGER.SCHEDULED, started18DaysPrior, CONST.OPERATION.FAILED));
-        mocks.serviceFabrikClient.deleteBackup(backup_guid, space_guid);
-        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid);
-        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid, space_guid, false);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid, false);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid, false);
         //Deletes transactionLogs older than retention period only. Hence, transactionLog older than 1 day is not deleted.
         mocks.cloudProvider.remove(transactionLogsPathname19);
         mocks.cloudProvider.remove(transactionLogsPathname18);
@@ -441,7 +453,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -500,7 +512,7 @@ describe('Jobs', function () {
         }, {
           status: 500
         });
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         return ScheduleBackupJob.run(job, () => {
           mocks.verify();
           const errStatusCode = 500;
@@ -523,7 +535,7 @@ describe('Jobs', function () {
         }, {
           status: 409
         });
-        mocks.cloudController.findServicePlanByInstanceId(instance_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         return ScheduleBackupJob.run(job, () => {})
           .then(() => {
             mocks.verify();
@@ -557,7 +569,7 @@ describe('Jobs', function () {
         }, {
           status: 409
         });
-        mocks.cloudController.findServicePlan(failed_instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, failed_instance_id, dummyDeploymentResource);
         return ScheduleBackupJob.run(_.chain(_.cloneDeep(job)).set('attrs.data.attempt', max_attmpts).value(), () => {})
           .then(() => {
             mocks.verify();
@@ -583,7 +595,7 @@ describe('Jobs', function () {
         }, {
           status: 409
         });
-        mocks.cloudController.findServicePlan(failed_instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, failed_instance_id, dummyDeploymentResource);
         return ScheduleBackupJob.run(job, () => {})
           .then(() => {
             mocks.verify();
@@ -604,7 +616,7 @@ describe('Jobs', function () {
         const backupResponse = {
           backup_guid: backup_guid
         };
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, dummyDeploymentResource);
         mocks.serviceFabrikClient.startBackup(instance_id, {
           type: 'online',
           trigger: CONST.BACKUP.TRIGGER.SCHEDULED
@@ -629,7 +641,7 @@ describe('Jobs', function () {
         });
       });
       it('should delete scheduled backup & any on-demand backups even when service instance is deleted', function () {
-        mocks.cloudController.findServicePlan(instance_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, {}, 1, 404);
         mocks.cloudProvider.list(container, prefix, [
           fileName14Daysprior,
           fileName16DaysPrior,
@@ -670,9 +682,8 @@ describe('Jobs', function () {
         mocks.cloudProvider.download(pathname14, scheduled_data);
         mocks.cloudProvider.download(pathname16, scheduled_data16);
         mocks.cloudProvider.download(pathname18, ondemand_data);
-        // mocks.serviceFabrikClient.deleteBackup(backup_guid, space_guid);
-        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid);
-        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid2, space_guid, true);
+        mocks.serviceFabrikClient.deleteBackup(backup_guid16, space_guid, true);
         mocks.cloudProvider.remove(transactionLogsPathname19);
         mocks.cloudProvider.remove(transactionLogsPathname16);
         mocks.cloudProvider.remove(transactionLogsPathname18);
@@ -698,7 +709,7 @@ describe('Jobs', function () {
         });
       });
       it('should cancel backup job (itself) when there are no more backups or transaction-logs to delete & instance is deleted', function () {
-        mocks.cloudController.findServicePlan(instance_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, instance_id, {}, 1, 404);
         mocks.cloudProvider.list(container, prefix, []);
         mocks.cloudProvider.list(container, prefix, []);
         //Since, all the backups are deleted the list is returning empty.
@@ -726,7 +737,7 @@ describe('Jobs', function () {
       });
       it('should handle errors when cancelling backup job (itself)', function () {
         job.attrs.data.instance_id = failed_instance_id;
-        mocks.cloudController.findServicePlan(failed_instance_id);
+        mocks.apiServerEventMesh.nockGetResource(CONST.APISERVER.RESOURCE_GROUPS.DEPLOYMENT, CONST.APISERVER.RESOURCE_TYPES.DIRECTOR, failed_instance_id, {}, 1, 404);
         mocks.cloudProvider.list(container, failed_prefix, []);
         mocks.cloudProvider.list(container, failed_prefix, []);
         mocks.cloudProvider.listBlobs(serviceContainer, transactionLogsPrefixFailedInstance, [], 2);
@@ -777,7 +788,6 @@ describe('Jobs', function () {
         }, {
           status: 500
         });
-        mocks.cloudController.findServicePlan(instance_id, plan_id);
         return ScheduleBackupJob.run(job, () => {
           expect(baseJobLogRunHistoryStub).not.to.be.called;
         });

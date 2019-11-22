@@ -14,9 +14,6 @@ router.use(commonMiddleware.csp());
 router.route('/deployments/outdated')
   .get(controller.handler('getOutdatedDeployments'))
   .all(commonMiddleware.methodNotAllowed(['GET']));
-router.route('/deployments/outdated/update')
-  .post(controller.handler('updateOutdatedDeployments'))
-  .all(commonMiddleware.methodNotAllowed(['POST']));
 router.route('/deployments')
   .get(controller.handler('getDeployments'))
   .all(commonMiddleware.methodNotAllowed(['GET']));
@@ -35,6 +32,12 @@ router.route('/backups')
 router.route('/backups/:backup_guid/delete')
   .post(controller.handler('deleteBackup'))
   .all(commonMiddleware.methodNotAllowed(['POST']));
+router.route('/config')
+  .put(controller.handler('createUpdateConfig'))
+  .all(commonMiddleware.methodNotAllowed(['PUT']));
+router.route('/config/:name')
+  .get(controller.handler('getConfig'))
+  .all(commonMiddleware.methodNotAllowed(['GET']));
 router.route('/service-fabrik/db')
   .post(controller.handler('provisionDataBase'))
   .put(controller.handler('updateDatabaseDeployment'))
@@ -71,6 +74,12 @@ router.route('/service-fabrik/maintenance')
   .put(controller.handler('updateMaintenance'))
   .get(controller.handler('getMaintenance'))
   .all(commonMiddleware.methodNotAllowed(['GET', 'POST', 'PUT']));
+router.route('/instances/update/schedules')
+  .get(controller.handler('getScheduledUpdateInstances'))
+  .all(commonMiddleware.methodNotAllowed(['GET']));
+router.route('/scheduler/:job_type/runNow/')
+  .post(controller.handler('runNow'))
+  .all(commonMiddleware.methodNotAllowed(['POST']));
 
 
 router.use(commonMiddleware.notFound());

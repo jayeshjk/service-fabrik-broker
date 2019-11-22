@@ -1,7 +1,8 @@
 'use strict';
 
 const _ = require('lodash');
-const BoshDirectorClient = require('../../data-access-layer/bosh/BoshDirectorClient');
+const config = require('../config');
+const CONST = require('../constants');
 
 class Plan {
   constructor(service, options) {
@@ -24,7 +25,9 @@ class Plan {
     return _
       .chain(this.manager.settings)
       .get('stemcell', {})
-      .defaults(BoshDirectorClient.getInfrastructure().stemcell)
+      .defaults(_.get(_.first(_.filter(config.directors, function (director) {
+        return director.primary && director.support_create;
+      })), 'infrastructure.stemcell'))
       .update('version', version => '' + version)
       .value();
   }
@@ -39,11 +42,35 @@ class Plan {
   }
 
   get supportedFeatures() {
-    return _.get(this.manager.settings, 'agent.supported_features');
+    return _.get(this.manager, 'settings.agent.supported_features');
   }
 
   get updatePredecessors() {
-    return _.get(this.manager.settings, 'update_predecessors');
+    return _.get(this.manager, 'settings.update_predecessors');
+  }
+
+  get resourceGroup() {
+    return _.get(this.manager, 'resource_mappings.resource_group');
+  }
+
+  get resourceType() {
+    return _.get(this.manager, 'resource_mappings.resource_type');
+  }
+
+  get bindResourceGroup() {
+    return _.get(this.manager, 'resource_mappings.bind.resource_group');
+  }
+
+  get bindResourceType() {
+    return _.get(this.manager, 'resource_mappings.bind.resource_type');
+  }
+
+  get restoreResourceGroup() {
+    return _.get(this.manager, 'resource_mappings.restore.resource_group', undefined) || CONST.APISERVER.RESOURCE_GROUPS.RESTORE;
+  }
+
+  get restoreResourceType() {
+    return _.get(this.manager, 'resource_mappings.restore.resource_type', undefined) || CONST.APISERVER.RESOURCE_TYPES.DEFAULT_RESTORE;
   }
 
   toJSON() {
@@ -63,6 +90,7 @@ class Plan {
       'name',
       'description',
       'metadata',
+      'schemas',
       'free'
     ];
   }

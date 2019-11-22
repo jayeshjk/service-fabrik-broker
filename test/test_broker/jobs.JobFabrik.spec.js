@@ -4,11 +4,11 @@ const JobFabrik = require('../../jobs/JobFabrik');
 const ScheduledBackup = require('../../jobs/ScheduleBackupJob');
 const ScheduledOobDeploymentBackupJob = require('../../jobs/ScheduledOobDeploymentBackupJob');
 const OperationStatusPollerJob = require('../../jobs/OperationStatusPollerJob');
-const BnRStatusPollerJob = require('../../jobs/BnRStatusPollerJob');
 const BluePrintJob = require('../../jobs/BluePrintJob');
 const BackupReaperJob = require('../../jobs/BackupReaperJob');
 const ServiceInstanceUpdateJob = require('../../jobs/ServiceInstanceUpdateJob');
 const DbCollectionReaperJob = require('../../jobs/DbCollectionReaperJob');
+const MeterInstanceJob = require('../../jobs/MeterInstanceJob');
 const CONST = require('../../common/constants');
 const AssertionError = require('assert').AssertionError;
 
@@ -22,8 +22,6 @@ describe('Jobs', function () {
         expect(reaperJob).to.eql(BackupReaperJob);
         const statusPollerJob = JobFabrik.getJob(CONST.JOB.OPERATION_STATUS_POLLER);
         expect(statusPollerJob).to.eql(OperationStatusPollerJob);
-        const bnrStatusPollerJob = JobFabrik.getJob(CONST.JOB.BNR_STATUS_POLLER);
-        expect(bnrStatusPollerJob).to.eql(BnRStatusPollerJob);
         const oobJob = JobFabrik.getJob(CONST.JOB.SCHEDULED_OOB_DEPLOYMENT_BACKUP);
         expect(oobJob).to.eql(ScheduledOobDeploymentBackupJob);
         const serviceInstanceUpdateJob = JobFabrik.getJob(CONST.JOB.SERVICE_INSTANCE_UPDATE);
@@ -32,6 +30,8 @@ describe('Jobs', function () {
         expect(dbCollectionReaperJob).to.eql(DbCollectionReaperJob);
         const blueprintJob = JobFabrik.getJob(CONST.JOB.BLUEPRINT_JOB);
         expect(blueprintJob).to.eql(BluePrintJob);
+        const meterInstanceJob = JobFabrik.getJob(CONST.JOB.METER_INSTANCE);
+        expect(meterInstanceJob).to.eql(MeterInstanceJob);
         blueprintJob.run({
           attrs: {
             data: {}

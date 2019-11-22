@@ -1,16 +1,16 @@
 'use strict';
 
 const _ = require('lodash');
-const lib = require('../../../broker/lib');
 const app = require('../support/apps').internal;
-const DBManager = require('../../../broker/lib/fabrik/DBManager');
-const fabrik = lib.fabrik;
+const dbManager = require('../../../data-access-layer/db/DBManager');
 const config = require('../../../common/config');
 const iaas = require('../../../data-access-layer/iaas');
 const backupStore = iaas.backupStore;
 const filename = backupStore.filename;
 const CONST = require('../../../common/constants');
 const utils = require('../../../common/utils');
+const eventmesh = require('../../../data-access-layer/eventmesh');
+const errors = require('../../../common/errors');
 
 describe('service-fabrik-admin', function () {
   describe('internal-db-lifecycle', function () {
@@ -53,10 +53,10 @@ describe('service-fabrik-admin', function () {
           sf_operations_args: {},
         }
       };
-      mocks.director.getBindingProperty(CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID, {}, config.mongodb.deployment_name, 'NOTFOUND');
-      fabrik.dbManager = new DBManager();
+
       //By default config is not configured for DB. So just for the test cases in this suite
       //setting up plan id and reinitializing DBManager.
+      dbManager.initialize();
       backupStore.cloudProvider = new iaas.CloudProviderClient(config.backup.provider);
       mocks.cloudProvider.auth();
       mocks.cloudProvider.getContainer(container);
@@ -71,8 +71,8 @@ describe('service-fabrik-admin', function () {
 
     afterEach(function () {
       mocks.reset();
-      timestampStub.reset();
-      uuidv4Stub.reset();
+      timestampStub.resetHistory();
+      uuidv4Stub.resetHistory();
     });
 
     after(function () {
@@ -83,13 +83,38 @@ describe('service-fabrik-admin', function () {
 
     describe('create', function () {
       let clock;
+      let sandbox, retryStub;
+      let getResourceStub, deleteResourceStub, createResourceStub;
+      before(function(){
+        sandbox = sinon.createSandbox();
+        retryStub = sandbox.stub(utils, 'retry').callsFake((callback, options) => callback());
+      });
 
       beforeEach(function () {
         clock = sinon.useFakeTimers(new Date().getTime());
+        getResourceStub = sandbox.stub(eventmesh.apiServerClient, 'getResource');
+        createResourceStub = sandbox.stub(eventmesh.apiServerClient, 'createResource');
+        deleteResourceStub = sandbox.stub(eventmesh.apiServerClient, 'deleteResource');
+        getResourceStub.withArgs().returns(Promise.try(() => {
+          throw new errors.NotFound('resource not found on ApiServer');
+        }));
+        deleteResourceStub.withArgs().returns(Promise.try(() => {
+          throw new errors.NotFound('resource not found on ApiServer');
+        }));
+
+        createResourceStub.withArgs().returns(Promise.resolve());
+
       });
 
       afterEach(function () {
+        getResourceStub.restore();
+        createResourceStub.restore();
+        deleteResourceStub.restore();
+        retryStub.resetHistory();
         clock.restore();
+      });
+      after(function () {
+        sandbox.restore();
       });
 
       it('should provision service fabrik internal mongodb when deployment not found', function (done) {
@@ -104,15 +129,12 @@ describe('service-fabrik-admin', function () {
         expectedRequestBody.phase = CONST.SERVICE_LIFE_CYCLE.PRE_BIND;
         mocks.deploymentHookClient.executeDeploymentActions(200, deploymentHookRequestBody);
         mocks.deploymentHookClient.executeDeploymentActions(200, expectedRequestBody);
-        mocks.director.getBindingProperty(CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID, {}, config.mongodb.deployment_name, 'NOTFOUND');
         mocks.director.getDeployment(config.mongodb.deployment_name, false, undefined, 2);
         mocks.director.getDeploymentInstances(config.mongodb.deployment_name);
         mocks.director.createOrUpdateDeployment('777');
         mocks.director.getDeploymentTask('777', 'done');
         mocks.agent.getInfo();
-        mocks.agent.createCredentials();
         config.directors[0].default_task_poll_interval = 10;
-        mocks.director.createBindingProperty(CONST.FABRIK_INTERNAL_MONGO_DB.BINDING_ID, {}, config.mongodb.deployment_name);
         return chai
           .request(app)
           .post(`${base_url}/service-fabrik/db`)
@@ -153,7 +175,6 @@ describe('service-fabrik-admin', function () {
           .omit('space_guid')
           .omit('organization_guid')
           .value();
-        expectedRequestBody.context.params.previous_manifest = mocks.director.manifest;
         expectedRequestBody.phase = CONST.SERVICE_LIFE_CYCLE.PRE_UPDATE;
         mocks.deploymentHookClient.executeDeploymentActions(200, expectedRequestBody);
         mocks.director.getDeployment(config.mongodb.deployment_name, true);

@@ -35,8 +35,8 @@ operationRouter.route('/')
   .all(commonMiddleware.methodNotAllowed(['GET']));
 
 /* Service Instance Router */
+instanceRouter.use(controller.handler('addResourceDetailsInRequest'));
 instanceRouter.use(controller.handler('verifyTenantPermission'));
-instanceRouter.use(controller.handler('assignManager'));
 instanceRouter.route('/')
   .get(controller.handler('getServiceInstanceState'))
   .all(commonMiddleware.methodNotAllowed(['GET']));
@@ -60,7 +60,8 @@ instanceRouter.route('/schedule_update')
   .all(middleware.isFeatureEnabled(CONST.FEATURE.SCHEDULED_UPDATE))
   .put(controller.handler('scheduleUpdate'))
   .get(controller.handler('getUpdateSchedule'))
-  .all(commonMiddleware.methodNotAllowed(['PUT', 'GET']));
+  .delete(controller.handler('cancelScheduledUpdate'))
+  .all(commonMiddleware.methodNotAllowed(['PUT', 'GET', 'DELETE']));
 
 /* Backup Router */
 backupRouter.use(controller.handler('verifyTenantPermission'));

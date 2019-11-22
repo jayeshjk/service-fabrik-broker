@@ -1,17 +1,18 @@
 'use strict';
 
+const Ajv = require('ajv');
 const _ = require('lodash');
 const errors = require('../../common/errors');
 const logger = require('../../common/logger');
-const quota = require('../../quota');
-const quotaManager = quota.quotaManager;
 const Forbidden = errors.Forbidden;
 const BadRequest = errors.BadRequest;
 const utils = require('../../common/utils');
+const config = require('../../common/config');
 const catalog = require('../../common/models/catalog');
 const eventmesh = require('../../data-access-layer/eventmesh');
 const CONST = require('./../../common/constants');
 const DeploymentAlreadyLocked = errors.DeploymentAlreadyLocked;
+const InvalidServiceParameters = errors.InvalidServiceParameters;
 const UnprocessableEntity = errors.UnprocessableEntity;
 
 
@@ -45,6 +46,38 @@ exports.validateCreateRequest = function () {
   };
 };
 
+exports.validateSchemaForRequest = function (target, operation) {
+  return function (req, res, next) {
+    const plan = getPlanFromRequest(req);
+
+    const schema = _.get(plan, `schemas.${target}.${operation}.parameters`);
+
+    if (schema) {
+      const parameters = _.get(req, 'body.parameters', {});
+
+      const schemaVersion = schema.$schema || '';
+      const validator = new Ajv({ schemaId: 'auto' });
+      if (schemaVersion.includes('draft-06')) {
+        validator.addMetaSchema(require('ajv/lib/refs/json-schema-draft-06.json'));
+      } else if (schemaVersion.includes('draft-04')) {
+        validator.addMetaSchema(require('ajv/lib/refs/json-schema-draft-04.json'));
+      } else if (!schemaVersion.includes('draft-07')) {
+        validator.addMetaSchema(require('ajv/lib/refs/json-schema-draft-06.json'));
+        validator.addMetaSchema(require('ajv/lib/refs/json-schema-draft-04.json'));
+      }
+      const validate = validator.compile(schema);
+
+      const isValid = validate(parameters);
+      if (!isValid) {
+        const reason = _.map(validate.errors, ({ dataPath, message }) => `${dataPath} ${message}`).join(', ');
+        return next(new InvalidServiceParameters(`Failed to validate service parameters, reason: ${reason}`));
+      }
+    }
+
+    next();
+  };
+};
+
 exports.checkBlockingOperationInProgress = function () {
   return function (req, res, next) {
     const plan_id = req.body.plan_id || req.query.plan_id;
@@ -59,7 +92,7 @@ exports.checkBlockingOperationInProgress = function () {
             next();
           }
         })
-        .catch((err) => {
+        .catch(err => {
           logger.error('[LOCK]: exception occurred --', err);
           next(err);
         });
@@ -69,38 +102,49 @@ exports.checkBlockingOperationInProgress = function () {
 };
 
 exports.checkQuota = function () {
+  function shouldCheckQuotaForPlatform(platform, origin) {
+    return (platform === CONST.PLATFORM.CF ||
+      (platform === CONST.PLATFORM.SM &&
+        origin === CONST.PLATFORM.CF));
+  }
   return function (req, res, next) {
-    if (utils.isServiceFabrikOperation(req.body)) {
+    if (!_.get(config.quota, 'enabled')) {
+      logger.debug('Quota check is not enabled');
+      next();
+    } else if (utils.isServiceFabrikOperation(req.body)) {
       logger.debug('[Quota]: Check skipped as it is ServiceFabrikOperation: calling next handler..');
       next();
     } else {
       const platform = _.get(req, 'body.context.platform');
-      if (platform === CONST.PLATFORM.CF) {
+      const origin = _.get(req, 'body.context.origin');
+      if (shouldCheckQuotaForPlatform(platform, origin)) {
         const orgId = req.body.organization_guid || req.body.context.organization_guid || _.get(req, 'body.previous_values.organization_id');
         if (orgId === undefined) {
-          next(new BadRequest(`organization_id is undefined`));
+          next(new BadRequest('organization_id is undefined'));
         } else {
+          const quota = require('../../quota');
+          const quotaManager = quota.quotaManager;
           return quotaManager.checkQuota(orgId, req.body.plan_id, _.get(req, 'body.previous_values.plan_id'), req.method)
             .then(quotaValid => {
               const plan = getPlanFromRequest(req);
               logger.debug(`quota api response : ${quotaValid}`);
               if (quotaValid === CONST.QUOTA_API_RESPONSE_CODES.NOT_ENTITLED) {
                 logger.error(`[QUOTA] Not entitled to create service instance: org '${req.body.organization_guid}', service '${plan.service.name}', plan '${plan.name}'`);
-                next(new Forbidden(`Not entitled to create service instance`));
+                next(new Forbidden('Not entitled to create service instance'));
               } else if (quotaValid === CONST.QUOTA_API_RESPONSE_CODES.INVALID_QUOTA) {
                 logger.error(`[QUOTA] Quota is not sufficient for this request: org '${req.body.organization_guid}', service '${plan.service.name}', plan '${plan.name}'`);
-                next(new Forbidden(`Quota is not sufficient for this request`));
+                next(new Forbidden('Quota is not sufficient for this request'));
               } else {
                 logger.debug('[Quota]: calling next handler..');
                 next();
               }
-            }).catch((err) => {
+            }).catch(err => {
               logger.error('[QUOTA]: exception occurred --', err);
               next(err);
             });
         }
       } else {
-        logger.debug(`[Quota]: Platform: ${platform}. Not ${CONST.PLATFORM.CF}. Skipping quota check : calling next handler..`);
+        logger.debug(`[Quota]: Platform: ${platform}, Origin: ${origin}. Platform is not ${CONST.PLATFORM.CF} or ${CONST.PLATFORM.SM}/${CONST.PLATFORM.CF}. Skipping quota check : calling next handler..`);
         next();
       }
     }
@@ -111,7 +155,7 @@ exports.isPlanDeprecated = function () {
   return function (req, res, next) {
     if (checkIfPlanDeprecated(req.body.plan_id)) {
       logger.error(`Service instance with the requested plan with id : '${req.body.plan_id}' cannot be created as it is deprecated.`);
-      throw new Forbidden(`Service instance with the requested plan cannot be created as it is deprecated.`);
+      throw new Forbidden('Service instance with the requested plan cannot be created as it is deprecated.');
     }
     next();
   };

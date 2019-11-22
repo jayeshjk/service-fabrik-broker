@@ -1,6 +1,7 @@
 'use strict';
 
 const _ = require('lodash');
+const uuid = require('uuid');
 const errors = require('../../common/errors');
 const CONST = require('../../common/constants');
 const NotImplementedBySubclass = errors.NotImplementedBySubclass;
@@ -9,13 +10,16 @@ const CloudProviderError = {
   NotFound: err => {
     return err.statusCode === CONST.HTTP_STATUS_CODE.NOT_FOUND || err.failCode === 'Item not found' ||
       err.code === CONST.HTTP_STATUS_CODE.NOT_FOUND || err.code === 'NotFound' ||
+      err.status == CONST.HTTP_STATUS_CODE.NOT_FOUND ||
       String(err.code).includes('NotFound') || String(err.statusCode).includes('NotFound');
   },
   Unauthorized: err => {
-    return err.statusCode === CONST.HTTP_STATUS_CODE.UNAUTHORIZED || err.failCode === 'Unauthorized';
+    return err.statusCode === CONST.HTTP_STATUS_CODE.UNAUTHORIZED || err.status === CONST.HTTP_STATUS_CODE.UNAUTHORIZED ||
+      err.failCode === 'Unauthorized';
   },
   Forbidden: err => {
-    return err.statusCode === CONST.HTTP_STATUS_CODE.FORBIDDEN || err.code === CONST.HTTP_STATUS_CODE.FORBIDDEN;
+    return err.statusCode === CONST.HTTP_STATUS_CODE.FORBIDDEN || err.status === CONST.HTTP_STATUS_CODE.FORBIDDEN ||
+      err.code === CONST.HTTP_STATUS_CODE.FORBIDDEN;
   }
 };
 
@@ -26,12 +30,12 @@ class BaseCloudClient {
 
   get provider() {
     switch (this.settings.name) {
-    case 'aws':
-      return 'amazon';
-    case 'os':
-      return 'openstack';
-    default:
-      return this.settings.name;
+      case 'aws':
+        return 'amazon';
+      case 'os':
+        return 'openstack';
+      default:
+        return this.settings.name;
     }
   }
 
@@ -41,6 +45,14 @@ class BaseCloudClient {
 
   get containerPrefix() {
     return _.nth(/^(.+)-broker$/.exec(this.containerName), 1);
+  }
+
+  createDiskFromSnapshot(snapshotId, zones, options) {
+    throw new NotImplementedBySubclass(`createDiskFromSnapshot - ${snapshotId}, ${zones}, ${options}`);
+  }
+
+  getDiskMetadata(diskCid, zone) {
+    throw new NotImplementedBySubclass(`getDiskMetadata: ${diskCid}, ${zone}`);
   }
 
   getContainer() {
@@ -73,6 +85,10 @@ class BaseCloudClient {
 
   deleteSnapshot() {
     throw new NotImplementedBySubclass('deleteSnapshot');
+  }
+
+  getRandomDiskId() {
+    return `sf-disk-${uuid.v4()}`;
   }
 
   static createStorageClient() {

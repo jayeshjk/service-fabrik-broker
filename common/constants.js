@@ -18,6 +18,17 @@ module.exports = Object.freeze({
     BOSH_PROCESSING: 'processing',
     BOSH_CANCELLING: 'cancelling'
   },
+  BOSH_DEPLOYMENT_MANIFEST_SECTIONS: [
+    'features',
+    'releases',
+    'stemcells',
+    'update',
+    'instance_groups',
+    'addons',
+    'properties',
+    'variables',
+    'tags'
+  ],
   FABRIK_SCHEDULED_OPERATION: 'scheduled',
   FABRIK_OPERATION_STAGGERED: 'staggered',
   FABRIK_OPERATION_COUNT_EXCEEDED: 'operation count exceeded',
@@ -37,9 +48,11 @@ module.exports = Object.freeze({
     CONNECTED: 'connected',
     DISCONNECTED: 'disconnected'
   },
+  EVENT_LOG_INTERCEPTOR: {
+    UPDATE_EVENT: 'update_instance'
+  },
   EVENTMESH_POLLER_DELAY: 200,
   UNLOCK_RESOURCE_POLLER_INTERVAL: 3000,
-  RESTORE_RESOURCE_POLLER_INTERVAL: 3000,
   RESTORE_OPERATION: {
     SUCCEEDED: 'succeeded',
     FAILED: 'failed',
@@ -52,8 +65,13 @@ module.exports = Object.freeze({
     ABORTED: 'aborted',
     PROCESSING: 'processing'
   },
+  OSB_OPERATION: {
+    OSB_SYNC_OPERATION_TIMEOUT_IN_SEC: 50 // in sec
+  },
   DIRECTOR_RESOURCE_POLLER_INTERVAL: 50000, // in ms
-  DIRECTOR_RESOURCE_POLLER_RELAXATION_TIME: 5000, // in ms
+  POLLER_RELAXATION_TIME: 5000, // in ms
+  PROCESSING_REQUEST_BY_MANAGER_TIMEOUT: 300000, // 5 minutes,
+  BOSH_RESTORE_POLLER_INTERVAL: 10000, // 10s
   OPERATION: {
     SUCCEEDED: 'succeeded',
     FAILED: 'failed',
@@ -73,12 +91,16 @@ module.exports = Object.freeze({
     UPDATE: 'update',
     BIND: 'bind',
     UNBIND: 'unbind',
-    DELETE: 'delete'
+    DELETE: 'delete',
+    SERVICE_FLOW: 'serviceflow'
   },
   URL: {
     backup: '/api/v1/service_instances/:instance_id/backup',
     restore: '/api/v1/service_instances/:instance_id/restore',
-    backup_by_guid: '/api/v1/backups/:backup_guid'
+    backup_by_guid: '/api/v1/backups/:backup_guid',
+    instance: '/:platform(cf|k8s|sm)/v2/service_instances/:instance_id',
+    METERING_AUTH: '/oauth/token',
+    METERING_USAGE: '/usage/v2/usage/documents'
   },
   INSTANCE_TYPE: {
     DIRECTOR: 'director',
@@ -96,6 +118,8 @@ module.exports = Object.freeze({
     OK: 200,
     CREATED: 201,
     ACCEPTED: 202,
+    NO_CONTENT: 204,
+    FOUND: 302,
     BAD_REQUEST: 400,
     UNAUTHORIZED: 401,
     FORBIDDEN: 403,
@@ -106,20 +130,26 @@ module.exports = Object.freeze({
     GONE: 410,
     PRECONDITION_FAILED: 412,
     UNPROCESSABLE_ENTITY: 422,
-    INTERNAL_SERVER_ERROR: 500
+    TOO_MANY_REQUESTS: 429,
+    INTERNAL_SERVER_ERROR: 500,
+    TIMEOUT: 504
   },
   JOB_NAME_ATTRIB: '_n_a_m_e_',
+  METERING_ARCHIVE_JOB_FILE_PREFIX: 'MeteringArchive-',
+  ARCHIVE_METERED_EVENTS_RUN_THRESHOLD: 500,
+  METERING_ARCHIVE_ROOT_FOLDER: 'MeteringArchive',
   JOB: {
-    //Define names of scheduled JOBS
+    // Define names of scheduled JOBS
     SCHEDULED_BACKUP: 'ScheduledBackup',
     SERVICE_FABRIK_BACKUP: 'ServiceFabrikBackup',
     SCHEDULED_OOB_DEPLOYMENT_BACKUP: 'ScheduledOobDeploymentBackup',
     OPERATION_STATUS_POLLER: 'OperationStatusPoller',
-    BNR_STATUS_POLLER: 'BnRStatusPoller',
     BLUEPRINT_JOB: 'BluePrintJob',
     BACKUP_REAPER: 'BackupReaper',
     SERVICE_INSTANCE_UPDATE: 'ServiceInstanceAutoUpdate',
-    DB_COLLECTION_REAPER: 'DbCollectionReaper'
+    DB_COLLECTION_REAPER: 'DbCollectionReaper',
+    METER_INSTANCE: 'MeterInstance',
+    ARCHIVE_METERED_EVENTS: 'ArchiveMeteredEvents'
   },
   JOB_RUN_STATUS_CODE: {
     SUCCEEDED: '0'
@@ -136,7 +166,7 @@ module.exports = Object.freeze({
     TRIGGER: {
       SCHEDULED: 'scheduled',
       ON_DEMAND: 'on-demand',
-      MANUAL: 'manual' //This is actually scheduled backup via existing cron jobs. Could be removed 14 days after the current solution goes live.
+      MANUAL: 'manual' // This is actually scheduled backup via existing cron jobs. Could be removed 14 days after the current solution goes live.
     }
   },
   SCHEDULE: {
@@ -147,15 +177,20 @@ module.exports = Object.freeze({
     HUMAN_INTERVAL: 'human-readable-interval',
     CRON_EXPRESSION: 'cron_expression'
   },
+  CONFIG: {
+    DISABLE_SCHEDULED_UPDATE_CONFIG_PREFIX: 'disable_scheduled_update_',
+    RESOURCE_NAME: 'sfconfig',
+    DISABLE_BOSH_BASED_RESTORE_PREFIX: 'disable_bosh_based_restore_'
+  },
   DB_MODEL: {
-    //Define all DB Model names
+    // Define all DB Model names
     JOB: 'JobDetail',
     JOB_RUN_DETAIL: 'JobRunDetail',
     MAINTENANCE_DETAIL: 'MaintenanceDetail',
     EVENT_DETAIL: 'EventDetail'
   },
-  //Topic naming convention: {GROUP}.{EVENT_NAME}
-  //Reasoning: pubsub module allow for dotted notation of event names and one can subscribe to all events even at group level
+  // Topic naming convention: {GROUP}.{EVENT_NAME}
+  // Reasoning: pubsub module allow for dotted notation of event names and one can subscribe to all events even at group level
   TOPIC: {
     MONGO_OPERATIONAL: 'MONGODB.OPERATIONAL',
     MONGO_INIT_FAILED: 'MONGODB.INIT_FAILIED',
@@ -197,11 +232,11 @@ module.exports = Object.freeze({
       SHUTTING_DOWN: 'SHUTTING_DOWN'
     }
   },
-  //BELOW UUIDs are taken from MongoDB Manifest for v3.0-dedicated-xsmall
+  // BELOW UUIDs are taken from MongoDB Manifest for v3.0-dedicated-xsmall
   FABRIK_INTERNAL_MONGO_DB: {
     SERVICE_ID: '3c266123-8e6e-4034-a2aa-e48e13fbf893',
     PLAN_ID: '2fff2c4d-7c31-4ed7-b505-0aeafbd8c0e2',
-    ORG_ID: 'FABDEC11-FABD-FABD-FABD-FABDECFABDEC', //Random valid UUID string made from FABDEC phonotically similar to FABRIK
+    ORG_ID: 'FABDEC11-FABD-FABD-FABD-FABDECFABDEC', // Random valid UUID string made from FABDEC phonotically similar to FABRIK
     SPACE_ID: 'FABDEC22-FABD-FABD-FABD-FABDECFABDEC',
     INSTANCE_ID: 'FABDEC33-FABD-FABD-FABD-FABDECFABDEC',
     BINDING_ID: 'FABDEC44-FABD-FABD-FABD-FABDECFABDEC'
@@ -217,25 +252,45 @@ module.exports = Object.freeze({
     CONTENT_TYPE: 'application/x-www-form-urlencoded',
     ACCEPT: 'application/json'
   },
-  SERVICE_BROKER_ERR_MSG: 'Service Broker Error: Something unexpected happened',
   ERR_CODES: {
     UNKNOWN: 'ERR-CODE-UNKNOWN',
     PRE_CONDITION_NOT_MET: 'PRE_CONDITION_NOT_MET',
     DEPLOYMENT_NAME_DUPED_ACROSS_DIRECTORS: 'DEPLOYMENT_NAME_DUPED_ACROSS_DIRECTORS',
     SF_IN_MAINTENANCE: 101,
-    INTERNAL_ERROR: 4
-    //Error codes should always be readable strings. However few error codes (used as process exit codes) must be int.
-    //Guideline : Only in cases where it is mandatory to have int, error codes should be so else they must always be Strings.
+    INTERNAL_ERROR: 4,
+    UNCAUGHT_FATAL_EXCEPTION: 1 // https://github.com/nodejs/node-v0.x-archive/blob/master/doc/api/process.markdown#exit-codes
+    // Error codes should always be readable strings. However few error codes (used as process exit codes) must be int.
+    // Guideline : Only in cases where it is mandatory to have int, error codes should be so else they must always be Strings.
+  },
+  ERR_STATUS_CODES: {
+    BROKER: {
+      DEFAULT: 10001
+    },
+    BOSH: {
+      BAD_FORMAT: 20002,
+      DIRECTOR_UNAVAILABLE: 20003,
+      DEPLOYMENT_NOT_FOUND: 20004,
+      DEPLOYMENT_ALREADY_EXISTS: 20009
+    },
+    DOCKER: {
+      DOCKER_UNAVAILABLE: 30003
+    },
+    CF: {
+      DEFAULT: 40001
+    },
+    STORE: {
+      DEFAULT: 50001
+    }
   },
   BOSH_ERR_CODES: {
     DEPLOYMENT_NOT_FOUND: 70000
   },
-  //OOB Deployments
+  // OOB Deployments
   FABRIK_OUT_OF_BAND_DEPLOYMENTS: {
     ROOT_FOLDER_NAME: 'OOB_DEPLOYMENTS',
     DEFAULT_DELETE_DELAY: 1000
   },
-  //BOSH Directors
+  // BOSH Directors
   BOSH_DIRECTORS: {
     BOSH_SF: 'bosh-sf',
     BOSH: 'bosh'
@@ -253,6 +308,7 @@ module.exports = Object.freeze({
   },
   APISERVER: {
     OPERATION_TIMEOUT_IN_SECS: 175,
+    HOLD_PROCESSING_LOCK: 'HOLD_PROCESSING_LOCK',
     RETRY_DELAY: 2000,
     MAX_RETRY_UNLOCK: 3,
     LOCK_TYPE: {
@@ -264,50 +320,95 @@ module.exports = Object.freeze({
     WATCHER_REFRESH_INTERVAL: 60000, // in ms ( 1 minute )
     POLLER_WATCHER_REFRESH_INTERVAL: 120000, // // in ms should be greater than DIRECTOR_RESOURCE_POLLER_INTERVAL
     WATCH_TIMEOUT: 600, // in sec (10 minutes)
-    VERSION: '1.9',
-    NAMESPACE: 'default',
+    VERSION: '1.10',
+    DEFAULT_NAMESPACE: 'default',
+    NAMESPACE_OBJECT: 'Namespace',
+    NAMESPACE_API_VERSION: 'v1',
+    SECRET_API_VERSION: 'v1',
     API_VERSION: 'v1alpha1',
     CRD_RESOURCE_GROUP: 'apiextensions.k8s.io',
     PATCH_CONTENT_TYPE: 'application/merge-patch+json',
+    CONFIG_MAP: {
+      API_VERSION: 'v1',
+      RESOURCE_TYPE: 'configmaps',
+      RESOURCE_KIND: 'ConfigMap'
+    },
     RESOURCE_GROUPS: {
+      INTEROPERATOR: 'osb.servicefabrik.io',
       LOCK: 'lock.servicefabrik.io',
       DEPLOYMENT: 'deployment.servicefabrik.io',
       BIND: 'bind.servicefabrik.io',
       BACKUP: 'backup.servicefabrik.io',
-      RESTORE: 'backup.servicefabrik.io'
+      RESTORE: 'backup.servicefabrik.io',
+      SERVICE_FLOW: 'serviceflow.servicefabrik.io',
+      INSTANCE: 'instance.servicefabrik.io'
     },
     RESOURCE_TYPES: {
+      INTEROPERATOR_SERVICEINSTANCES: 'sfserviceinstances',
+      INTEROPERATOR_SERVICEBINDINGS: 'sfservicebindings',
+      INTEROPERATOR_SERVICES: 'sfservices',
+      INTEROPERATOR_PLANS: 'sfplans',
       DEPLOYMENT_LOCKS: 'deploymentlocks',
       DIRECTOR: 'directors',
       DOCKER: 'dockers',
       VIRTUALHOST: 'virtualhosts',
+      POSTGRESQL_MT: 'postgresqlmts',
       DIRECTOR_BIND: 'directorbinds',
       DOCKER_BIND: 'dockerbinds',
       VIRTUALHOST_BIND: 'virtualhostbinds',
+      POSTGRESQL_MT_BIND: 'postgresqlmtbinds',
       DEFAULT_BACKUP: 'defaultbackups',
-      DEFAULT_RESTORE: 'defaultrestores'
+      DEFAULT_RESTORE: 'defaultrestores',
+      DEFAULT_BOSH_RESTORE: 'defaultboshrestores',
+      SERIAL_SERVICE_FLOW: 'serialserviceflows',
+      SFEVENT: 'sfevents',
+      TASK: 'tasks'
     },
     RESOURCE_STATE: {
       IN_QUEUE: 'in_queue',
       IN_PROGRESS: 'in_progress',
+      WAITING: 'waiting',
+      POST_PROCESSING: 'post_processing',
       DELETE: 'delete',
       DELETED: 'deleted',
       SUCCEEDED: 'succeeded',
       FAILED: 'failed',
       DELETE_FAILED: 'delete_failed',
       ABORT: 'abort',
+      ABORTING: 'aborting',
       ABORTED: 'aborted',
       UPDATE: 'update',
       LOCKED: 'locked',
-      UNLOCKED: 'unlocked'
+      UNLOCKED: 'unlocked',
+      TRIGGER: 'TRIGGER',
+      FINALIZE: 'FINALIZE'
+    },
+    FINALIZERS: {
+      BROKER: 'broker.servicefabrik.io'
+    },
+    TASK_TYPE: {
+      SERVICE_INSTANCE_BACKUP: 'ServiceInstanceBackupTask',
+      SERVICE_INSTANCE_UPDATE: 'ServiceInstanceUpdateTask',
+      BLUEPRINT: 'BlueprintTask'
+    },
+    TASK_STATE: {
+      DONE: 'DONE',
+      RELAYED: 'RELAYED',
+      FLOW_COMPLETE: 'FLOW_COMPLETE'
     },
     RESOURCE_KEYS: {
       STATE: 'state',
       OPTIONS: 'options',
       LASTOPERATION: 'lastoperation'
     },
-    WRITE_OPERATIONS: ['create', 'update', 'delete', 'restore'],
-    READ_OPERATIONS: ['backup'],
+    WRITE_OPERATIONS: ['create', 'update', 'delete', 'restore', 'update_serviceflow'],
+    READ_OPERATIONS: ['backup']
+  },
+  METER_STATE: {
+    TO_BE_METERED: 'TO_BE_METERED',
+    METERED: 'METERED',
+    EXCLUDED: 'EXCLUDED',
+    FAILED: 'FAILED'
   },
   SERVICE_KEYS: {
     ATTRIBUTES: 'attributes',
@@ -320,12 +421,14 @@ module.exports = Object.freeze({
   },
   PLATFORM: {
     CF: 'cloudfoundry',
-    K8S: 'kubernetes'
+    K8S: 'kubernetes',
+    SM: 'sapcp'
   },
 
   PLATFORM_ALIAS_MAPPINGS: {
     'cf': 'cloudfoundry',
-    'k8s': 'kubernetes'
+    'k8s': 'kubernetes',
+    'sm': 'sapcp'
   },
 
   PLATFORM_MANAGER: {
@@ -342,7 +445,8 @@ module.exports = Object.freeze({
       BACKUP: 'backup',
       RESTORE: 'restore',
       MULTI_TENANCY: 'multi_tenancy'
-    }
+    },
+    OPERATION_TIMEOUT_IN_MILLIS: 25000
   },
   STATE: {
     ACTIVE: 'active',
@@ -359,7 +463,7 @@ module.exports = Object.freeze({
   FILE_PERMISSIONS: {
     RWXR_XR_X: 0o755
   },
-  //IaaS SDK config
+  // IaaS SDK config
   SDK_CLIENT: {
     AWS: {
       MAX_RETRIES: 10
@@ -367,16 +471,6 @@ module.exports = Object.freeze({
   },
   ADD_ON_JOBS: {
     IP_TABLES_MANAGER: 'iptables-manager'
-  },
-  ETCD: {
-    SORT_BY_CREATE: 'Create',
-    TARGET_NONE: 'None',
-    JSON: 'json',
-    NUMBER: 'number',
-    STRING: 'string',
-    LOCK_TTL: 5,
-    LOCK_KEY_SUFFIX: '/lock',
-    LOCK_DETAILS_SUFFIX: '/lock/details'
   },
   API_SERVER: {
     WATCH_EVENT: {
@@ -387,5 +481,42 @@ module.exports = Object.freeze({
   },
   NETWORK_MANAGER: {
     NETWORK_ID: 'SF'
+  },
+  MULTITENANCY_SERVICE_TYPE: {
+    MULTITENANCYSERVICE: 'multitenancyService',
+    MULTITENANCYBINDSERVICE: 'multitenancyBindService'
+  },
+  SERVICE_FLOW: {
+    DEFINITION_FILE_NAME: 'serial-serviceflow-definition.yml',
+    TYPE: {
+      BLUEPRINT_SERVICEFLOW: 'blueprint_serviceflow',
+      UPGRADE_MULTI_AZ: 'upgrade_to_multi_az',
+      DOWNGRADE_TO_SINGLE_AZ: 'downgrade_to_single_az',
+      MAJOR_VERSION_UPGRADE: 'major_version_upgrade'
+    }
+  },
+  DOCKER_HOST_CONFIG: {
+    PIDS_LIMIT: 150
+  },
+  CF_SECURITY_GROUP: {
+    MAX_RETRIES: 4,
+    RETRY_DELAY: 1000
+  },
+  SYSTEM_ERRORS: ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ESOCKETTIMEDOUT'],
+  INTERNAL: 'internal',
+  ALL: 'all',
+  ANY: 'any',
+  DISABLED: 'disabled',
+  REGEX_PATTERN: {
+    URL: /(ftp|http|https):\/\/(\w+:{0,1}\w*@)?(\S+)(:[0-9]+)?(\/|\/([\w#!:.?+=&%@!\-\/]))?/
+  },
+  ALI_CLIENT:{
+    ECS:{
+      DOMAIN: 'https://ecs.aliyuncs.com',
+      API_VERSION: '2014-05-26',
+      REQ_TIMEOUT: 20000, // 20 seconds
+      AVAILABILITY_POLLER_DELAY: 1000, // 1sec
+      AVAILABILITY_POLLER_TIMEOUT_IN_SEC: 3600 // 60 minutes
+    }
   }
 });

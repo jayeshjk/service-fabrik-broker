@@ -1,0 +1,36 @@
+codecov:
+  notify:
+    require_ci_to_pass: yes
+
+ignore:
+  - "interoperator/pkg/client/**/*"  # ignore folders and all its contents
+  - "interoperator/pkg/cluster/registry/mock_registry/"
+  - "interoperator/internal/resources/mock_resources/"
+  - "interoperator/internal/provisioner/mock_provisioner/"
+  - "interoperator/api/resource/v1alpha1/mock_sfcluster/"
+  - "interoperator/controllers/multiclusterdeploy/watchmanager/mock_manager.go"
+  - "interoperator/**/zz_generated.deepcopy.go"
+
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    project: yes
+    patch: yes
+    changes: no
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+comment:
+  layout: "header, diff"
+  behavior: default
+  require_changes: no

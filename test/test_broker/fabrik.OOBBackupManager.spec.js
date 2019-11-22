@@ -7,7 +7,7 @@ const BackupStore = require('../../data-access-layer/iaas/BackupStore');
 const Agent = require('../../data-access-layer/service-agent');
 const FabrikBaseController = require('../../api-controllers/FabrikBaseController');
 const CONST = require('../../common/constants');
-const OobBackupManager = require('../../broker/lib/fabrik/OobBackupManager');
+const OobBackupManager = require('../../data-access-layer/oob-manager/OobBackupManager');
 const bosh = require('../../data-access-layer/bosh');
 const backupStoreForOob = require('../../data-access-layer/iaas').backupStoreForOob;
 
@@ -120,7 +120,7 @@ describe('fabrik', function () {
     };
 
     before(function () {
-      sandbox = sinon.sandbox.create();
+      sandbox = sinon.createSandbox();
       getDeploymentVMsStub = sandbox.stub(BoshDirectorClient.prototype, 'getDeploymentVms');
       getDeploymentInstancesStub = sandbox.stub(BoshDirectorClient.prototype, 'getDeploymentInstances');
       getDeploymentManifestStub = sandbox.stub(BoshDirectorClient.prototype, 'getDeploymentManifest');
@@ -157,22 +157,22 @@ describe('fabrik', function () {
     });
 
     afterEach(function () {
-      getDeploymentManifestStub.reset();
-      getDeploymentInstancesStub.reset();
-      getDeploymentVMsStub.reset();
-      getHostStub.reset();
-      startBackupStub.reset();
-      startRestoreStub.reset();
-      getBackupLastOperationStub.reset();
-      getBackupLogsStub.reset();
-      getRestoreLastOperationStub.reset();
-      getRestoreLogsStub.reset();
-      putFileStub.reset();
-      getFileStub.reset();
-      patchBackupFileStub.reset();
-      patchRestoreFileStub.reset();
-      listOobBackupFilesStub.reset();
-      getRestoreFileStub.reset();
+      getDeploymentManifestStub.resetHistory();
+      getDeploymentInstancesStub.resetHistory();
+      getDeploymentVMsStub.resetHistory();
+      getHostStub.resetHistory();
+      startBackupStub.resetHistory();
+      startRestoreStub.resetHistory();
+      getBackupLastOperationStub.resetHistory();
+      getBackupLogsStub.resetHistory();
+      getRestoreLastOperationStub.resetHistory();
+      getRestoreLogsStub.resetHistory();
+      putFileStub.resetHistory();
+      getFileStub.resetHistory();
+      patchBackupFileStub.resetHistory();
+      patchRestoreFileStub.resetHistory();
+      listOobBackupFilesStub.resetHistory();
+      getRestoreFileStub.resetHistory();
     });
 
     after(function () {
