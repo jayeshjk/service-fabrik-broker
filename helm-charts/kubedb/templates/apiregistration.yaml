@@ -8,7 +8,10 @@ kind: APIService
 metadata:
   name: v1alpha1.validators.kubedb.com
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
 spec:
   group: validators.kubedb.com
   version: v1alpha1
@@ -24,7 +27,10 @@ kind: APIService
 metadata:
   name: v1alpha1.mutators.kubedb.com
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
 spec:
   group: mutators.kubedb.com
   version: v1alpha1
@@ -41,29 +47,15 @@ metadata:
   name: {{ template "kubedb.fullname" . }}-apiserver-cert
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
 type: Opaque
 data:
   tls.crt: {{ b64enc $cert.Cert }}
   tls.key: {{ b64enc $cert.Key }}
 ---
-{{ $promNamespace:= default .Release.Namespace .Values.monitoring.prometheus.namespace }}
-{{- if (and (ne $promNamespace .Release.Namespace) .Values.monitoring.enabled) }}
-# if operator monitoring is enabled and prometheus namespace is different than operator
-# create the above secret in prometheus namespace too.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ template "kubedb.fullname" . }}-apiserver-cert
-  namespace: {{ $promNamespace }}
-  labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
-type: kubernetes.io/tls
-data:
-  tls.crt: {{ b64enc $cert.Cert }}
-  tls.key: {{ b64enc $cert.Key }}
----
-{{ end }}
 {{ if .Values.rbac.create }}
 # to read the config for terminating authentication
 apiVersion: rbac.authorization.k8s.io/v1
@@ -72,7 +64,10 @@ metadata:
   name: {{ template "kubedb.fullname" . }}-apiserver-extension-server-authentication-reader
   namespace: kube-system
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
 roleRef:
   kind: Role
   apiGroup: rbac.authorization.k8s.io
@@ -88,7 +83,10 @@ kind: ClusterRoleBinding
 metadata:
   name: {{ template "kubedb.fullname" . }}-apiserver-auth-delegator
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
 roleRef:
   kind: ClusterRole
   apiGroup: rbac.authorization.k8s.io

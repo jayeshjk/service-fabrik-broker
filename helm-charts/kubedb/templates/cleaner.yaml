@@ -3,7 +3,10 @@ kind: Job
 metadata:
   name: {{ .Release.Name }}-cleaner
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
   annotations:
     "helm.sh/hook": pre-delete
     "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
@@ -24,5 +27,5 @@ spec:
           - sh
           - -c
           - "sleep 2; kubectl delete validatingwebhookconfigurations validators.kubedb.com || true; kubectl delete mutatingwebhookconfiguration mutators.kubedb.com || true"
-        imagePullPolicy: {{ .Values.imagePullPolicy  }}
+        imagePullPolicy: IfNotPresent
       restartPolicy: Never

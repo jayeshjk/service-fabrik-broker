@@ -7,7 +7,10 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: mutators.kubedb.com
   labels:
-    {{- include "kubedb.labels" . | nindent 4 }}
+    chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    app: "{{ template "kubedb.name" . }}"
+    heritage: "{{ .Release.Service }}"
+    release: "{{ .Release.Name }}"
   annotations:
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-delete-policy": before-hook-creation
@@ -17,7 +20,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/elasticsearchmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/elasticsearches
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -33,7 +36,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/postgresmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/postgreses
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -49,7 +52,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/mysqlmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/mysqls
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -65,7 +68,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/mongodbmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/mongodbs
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -81,7 +84,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/redismutators
+      path: /apis/mutators.kubedb.com/v1alpha1/redises
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -97,7 +100,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/memcachedmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/memcacheds
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
@@ -113,7 +116,7 @@ webhooks:
     service:
       namespace: default
       name: kubernetes
-      path: /apis/mutators.kubedb.com/v1alpha1/etcdmutators
+      path: /apis/mutators.kubedb.com/v1alpha1/etcds
     caBundle: {{ b64enc .Values.apiserver.ca }}
   rules:
   - apiGroups: ["kubedb.com"]
